@@ -1,0 +1,58 @@
+# Build artifacts
+tmp/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Air
+air.toml
+tmp/
+.air.toml
+
+# Documentation
+*.md
+!README.md
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Test files
+*_test.go
+testdata/
+
+# Development files
+docker-compose.yml
+docker-compose.*.yml
+.dockerignore
+
+# Mise
+mise.toml
+
