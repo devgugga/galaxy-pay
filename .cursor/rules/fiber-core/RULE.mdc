@@ -1,0 +1,384 @@
+---
+description: "Fiber core concepts: zero-allocation patterns, context value immutability, memory management, and performance optimization with custom JSON encoders"
+alwaysApply: false
+globs: ["**/*.go"]
+---
+
+# Fiber Core Concepts & Performance
+
+## Zero-Allocation Philosophy
+
+Fiber is built on Fasthttp with a **zero-allocation design**. Values returned from `fiber.Ctx` are **NOT immutable** and are **reused across requests** for maximum performance.
+
+---
+
+## Context Value Immutability
+
+### Critical Rule
+
+**⚠️ Context values are ONLY valid within the handler scope**
+
+Variables obtained from context (`Params()`, `Query()`, `Body()`, `Get()`, `Cookies()`) will be **reused** when the handler returns. Storing references beyond handler scope causes **data corruption**.
+
+### ❌ INCORRECT - Data Corruption Risk
+
+```go
+var globalUsername string // DON'T: Will be corrupted!
+
+app.Get("/user/:username", func(c *fiber.Ctx) error {
+    // ❌ Storing reference to context value globally
+    globalUsername = c.Params("username")
+    return c.SendString("Hello")
+})
+
+// Later, in another request:
+// globalUsername now contains data from a DIFFERENT request!
+```
+
+```go
+app.Get("/async/:data", func(c *fiber.Ctx) error {
+    data := c.Params("data")
+
+    go func() {
+        // ❌ DANGER: data is reused after handler returns
+        time.Sleep(1 * time.Second)
+        processData(data) // May contain wrong data!
+    }()
+
+    return c.SendString("Processing")
+})
+```
+
+### ✅ CORRECT - Safe Value Persistence
+
+```go
+import "github.com/gofiber/utils"
+
+app.Get("/user/:username", func(c *fiber.Ctx) error {
+    username := c.Params("username")
+
+    // ✅ Option 1: Use utils.CopyString (recommended)
+    usernameCopy := utils.CopyString(username)
+
+    // Now safe to use anywhere
+    go processUser(usernameCopy)
+    storeInCache(usernameCopy)
+
+    return c.SendString("Hello " + usernameCopy)
+})
+```
+
+```go
+app.Post("/data", func(c *fiber.Ctx) error {
+    bodyBytes := c.Body()
+
+    // ✅ Option 2: Manual buffer copy
+    buffer := make([]byte, len(bodyBytes))
+    copy(buffer, bodyBytes)
+    bodyCopy := buffer
+
+    go processAsync(bodyCopy) // Safe!
+
+    return c.SendStatus(200)
+})
+```
+
+```go
+app.Get("/query", func(c *fiber.Ctx) error {
+    search := c.Query("q")
+
+    // ✅ Option 3: String conversion (works but less explicit)
+    searchCopy := string([]byte(search))
+
+    return c.JSON(fiber.Map{
+        "query": searchCopy,
+    })
+})
+```
+
+---
+
+## Immutable Configuration Trade-off
+
+### Enable Global Immutability
+
+```go
+app := fiber.New(fiber.Config{
+    Immutable: true, // All context values become immutable
+})
+```
+
+### ⚖️ Trade-offs
+
+**✅ Benefits:**
+- All context values safe to use anywhere
+- No need to manually copy values
+- Prevents data corruption bugs
+
+**❌ Costs:**
+- **Significant performance penalty**
+- Defeats Fiber's zero-allocation design
+- Higher memory usage per request
+
+### When to Use
+
+- ✅ Development/debugging
+- ✅ Prototyping
+- ✅ Low-traffic applications
+- ❌ **Production high-throughput APIs**
+- ❌ Performance-critical systems
+
+---
+
+## Custom JSON Encoder/Decoder
+
+### Default Encoder Limitation
+
+Fiber v2.32.0+ uses `encoding/json` for stability, but it's **slower** than alternatives.
+
+### Recommended Fast Encoders
+
+```go
+import (
+    "github.com/gofiber/fiber/v2"
+    json "github.com/goccy/go-json" // or other fast library
+)
+
+app := fiber.New(fiber.Config{
+    JSONEncoder: json.Marshal,
+    JSONDecoder: json.Unmarshal,
+})
+```
+
+### Encoder Options
+
+| Library | Speed | Compatibility | Use Case |
+|---------|-------|---------------|----------|
+| `goccy/go-json` | ⚡⚡⚡ | ✅ Excellent | **Recommended** - Best balance |
+| `bytedance/sonic` | ⚡⚡⚡⚡ | ✅ Good | Fastest (JIT), x86 only |
+| `segmentio/encoding` | ⚡⚡⚡ | ✅ Excellent | Wide type support |
+| `mailru/easyjson` | ⚡⚡⚡ | ⚠️ Code gen | Requires code generation |
+| `wI2L/jettison` | ⚡⚡⚡ | ✅ Good | Optimized for encoding |
+
+### HTTP Client Custom Encoder
+
+```go
+client := fiber.AcquireClient()
+client.JSONEncoder = json.Marshal
+client.JSONDecoder = json.Unmarshal
+```
+
+---
+
+## Application Setup Pattern
+
+### ✅ Recommended Setup
+
+```go
+package main
+
+import (
+    "log"
+    "os"
+    "os/signal"
+    "syscall"
+    "time"
+
+    "github.com/gofiber/fiber/v2"
+    "github.com/gofiber/fiber/v2/middleware/recover"
+    "github.com/gofiber/fiber/v2/middleware/logger"
+    json "github.com/goccy/go-json"
+)
+
+func main() {
+    // Initialize with performance config
+    app := fiber.New(fiber.Config{
+        AppName:      "Galaxy Pay API v1.0.0",
+        ServerHeader: "Fiber",
+
+        // Custom JSON encoder (performance)
+        JSONEncoder: json.Marshal,
+        JSONDecoder: json.Unmarshal,
+
+        // Error handling
+        ErrorHandler: customErrorHandler,
+
+        // Performance tuning
+        Prefork:       false, // Set true for multi-process
+        CaseSensitive: true,
+        StrictRouting: false,
+
+        // Timeouts
+        ReadTimeout:  15 * time.Second,
+        WriteTimeout: 15 * time.Second,
+        IdleTimeout:  60 * time.Second,
+
+        // Body limits
+        BodyLimit: 4 * 1024 * 1024, // 4MB
+
+        // Disable for production
+        DisableStartupMessage: os.Getenv("ENV") == "production",
+    })
+
+    // Setup middleware (order matters!)
+    app.Use(recover.New())
+    app.Use(logger.New())
+
+    // Setup routes
+    setupRoutes(app)
+
+    // Graceful shutdown
+    go func() {
+        if err := app.Listen(":" + getPort()); err != nil {
+            log.Fatalf("Server failed: %v", err)
+        }
+    }()
+
+    quit := make(chan os.Signal, 1)
+    signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+    <-quit
+
+    log.Println("Shutting down...")
+    if err := app.ShutdownWithTimeout(30 * time.Second); err != nil {
+        log.Fatalf("Shutdown failed: %v", err)
+    }
+}
+
+func customErrorHandler(c *fiber.Ctx, err error) error {
+    code := fiber.StatusInternalServerError
+    if e, ok := err.(*fiber.Error); ok {
+        code = e.Code
+    }
+    return c.Status(code).JSON(fiber.Map{
+        "error": err.Error(),
+    })
+}
+
+func getPort() string {
+    if port := os.Getenv("PORT"); port != "" {
+        return port
+    }
+    return "8080"
+}
+```
+
+---
+
+## Memory Management Best Practices
+
+### DO ✅
+
+```go
+// Copy context values before goroutines
+app.Get("/async", func(c *fiber.Ctx) error {
+    data := utils.CopyString(c.Query("data"))
+
+    go processAsync(data) // ✅ Safe
+
+    return c.SendString("Processing")
+})
+```
+
+```go
+// Parse request body once, reuse struct
+app.Post("/user", func(c *fiber.Ctx) error {
+    user := new(User)
+
+    if err := c.BodyParser(user); err != nil {
+        return err
+    }
+
+    // Use parsed user multiple times
+    if err := validate(user); err != nil {
+        return err
+    }
+
+    saveUser(user)
+    return c.JSON(user)
+})
+```
+
+```go
+// Use c.Locals() for request-scoped data
+func middleware(c *fiber.Ctx) error {
+    c.Locals("startTime", time.Now())
+    return c.Next()
+}
+
+func handler(c *fiber.Ctx) error {
+    start := c.Locals("startTime").(time.Time)
+    duration := time.Since(start)
+    // ...
+}
+```
+
+### DON'T ❌
+
+```go
+// ❌ Don't store context values globally
+var globalData string
+app.Get("/", func(c *fiber.Ctx) error {
+    globalData = c.Query("data") // WRONG!
+    return c.SendString("OK")
+})
+```
+
+```go
+// ❌ Don't pass context values to goroutines without copying
+app.Get("/", func(c *fiber.Ctx) error {
+    name := c.Params("name")
+
+    go func() {
+        time.Sleep(1 * time.Second)
+        log.Println(name) // WRONG! May be corrupted
+    }()
+
+    return c.SendString("OK")
+})
+```
+
+```go
+// ❌ Don't parse body multiple times
+app.Post("/", func(c *fiber.Ctx) error {
+    var user1 User
+    c.BodyParser(&user1) // Parsed once
+
+    var user2 User
+    c.BodyParser(&user2) // Inefficient! Use user1
+
+    return c.JSON(user1)
+})
+```
+
+```go
+// ❌ Don't use Immutable: true in production without benchmarking
+app := fiber.New(fiber.Config{
+    Immutable: true, // CAREFUL! Performance cost
+})
+```
+
+---
+
+## Performance Checklist
+
+- ✅ Use custom JSON encoder (goccy/go-json)
+- ✅ Copy context values only when needed outside handler scope
+- ✅ Avoid `Immutable: true` in production (unless benchmarked)
+- ✅ Parse request body once per request
+- ✅ Use `c.Locals()` for request-scoped data
+- ✅ Configure appropriate timeouts
+- ✅ Set reasonable body limits
+- ❌ Never store context value references globally
+- ❌ Never pass uncoped context values to goroutines
+- ❌ Never enable Prefork without understanding implications
+
+---
+
+## Summary
+
+**Key Takeaways:**
+1. Context values are **NOT immutable** - they're reused for performance
+2. Copy values with `utils.CopyString()` when needed beyond handler scope
+3. Use custom JSON encoder for **20-40% performance improvement**
+4. `Immutable: true` trades safety for performance - avoid in production
+5. Parse body once, configure timeouts, set body limits

@@ -1,0 +1,218 @@
+---
+description: "Fiber security best practices: authentication (BasicAuth, KeyAuth, JWT), CSRF protection, CORS, Helmet headers, and secure cookies"
+alwaysApply: false
+globs: ["internal/middleware/**/*.go", "internal/handlers/**/*.go"]
+---
+
+# Fiber Security Best Practices
+
+## Authentication Middleware
+
+### Basic Auth
+
+```go
+import "github.com/gofiber/fiber/v2/middleware/basicauth"
+
+app.Use(basicauth.New(basicauth.Config{
+    Users: map[string]string{
+        "admin": "password123",
+        "user":  "pass456",
+    },
+    Realm: "Restricted",
+    Unauthorized: func(c *fiber.Ctx) error {
+        return c.Status(401).JSON(fiber.Map{
+            "error": "Unauthorized",
+        })
+    },
+}))
+```
+
+### Key Auth (API Keys)
+
+```go
+import "github.com/gofiber/fiber/v2/middleware/keyauth"
+
+app.Use(keyauth.New(keyauth.Config{
+    KeyLookup: "header:X-API-Key",
+    Validator: func(c *fiber.Ctx, key string) (bool, error) {
+        // Validate API key against database
+        return validateAPIKey(key), nil
+    },
+    ErrorHandler: func(c *fiber.Ctx, err error) error {
+        return c.Status(401).JSON(fiber.Map{
+            "error": "Invalid API key",
+        })
+    },
+}))
+```
+
+### JWT Authentication
+
+```go
+import "github.com/golang-jwt/jwt/v5"
+
+func jwtMiddleware(c *fiber.Ctx) error {
+    token := c.Get("Authorization")
+
+    if token == "" || !strings.HasPrefix(token, "Bearer ") {
+        return c.Status(401).JSON(fiber.Map{"error": "Missing token"})
+    }
+
+    tokenString := strings.TrimPrefix(token, "Bearer ")
+
+    claims := &jwt.RegisteredClaims{}
+    parsedToken, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
+        return []byte(os.Getenv("JWT_SECRET")), nil
+    })
+
+    if err != nil || !parsedToken.Valid {
+        return c.Status(401).JSON(fiber.Map{"error": "Invalid token"})
+    }
+
+    // Store claims in context
+    c.Locals("userId", claims.Subject)
+
+    return c.Next()
+}
+```
+
+---
+
+## CSRF Protection
+
+```go
+import "github.com/gofiber/fiber/v2/middleware/csrf"
+
+app.Use(csrf.New(csrf.Config{
+    KeyLookup:      "header:X-CSRF-Token",
+    CookieName:     "csrf_",
+    CookieSameSite: "Lax",
+    Expiration:     1 * time.Hour,
+    KeyGenerator:   utils.UUID,
+}))
+```
+
+---
+
+## Security Headers (Helmet)
+
+```go
+import "github.com/gofiber/fiber/v2/middleware/helmet"
+
+app.Use(helmet.New(helmet.Config{
+    XSSProtection:         "1; mode=block",
+    ContentTypeNosniff:    "nosniff",
+    XFrameOptions:         "SAMEORIGIN",
+    HSTSMaxAge:            31536000,
+    HSTSExcludeSubdomains: false,
+    ContentSecurityPolicy: "default-src 'self'",
+    ReferrerPolicy:        "no-referrer",
+}))
+```
+
+---
+
+## CORS Configuration
+
+```go
+import "github.com/gofiber/fiber/v2/middleware/cors"
+
+app.Use(cors.New(cors.Config{
+    AllowOrigins:     "https://example.com,https://app.example.com",
+    AllowMethods:     "GET,POST,PUT,DELETE",
+    AllowHeaders:     "Origin,Content-Type,Accept,Authorization",
+    AllowCredentials: true,
+    ExposeHeaders:    "Content-Length",
+    MaxAge:           3600,
+}))
+```
+
+---
+
+## Secure Cookies
+
+```go
+app.Post("/login", func(c *fiber.Ctx) error {
+    // After successful authentication
+    c.Cookie(&fiber.Cookie{
+        Name:     "session",
+        Value:    sessionID,
+        HTTPOnly: true,           // Prevent XSS access
+        Secure:   true,           // HTTPS only
+        SameSite: "Strict",       // CSRF protection
+        Expires:  time.Now().Add(24 * time.Hour),
+    })
+
+    return c.SendString("Logged in")
+})
+```
+
+---
+
+## Input Validation & Sanitization
+
+```go
+import "html"
+
+// Always validate input
+type CreateUserRequest struct {
+    Email    string `json:"email" validate:"required,email"`
+    Username string `json:"username" validate:"required,alphanum,min=3,max=20"`
+    Password string `json:"password" validate:"required,strongpassword"`
+}
+
+// Sanitize input
+func sanitizeInput(input string) string {
+    return html.EscapeString(strings.TrimSpace(input))
+}
+```
+
+---
+
+## Complete Security Setup
+
+```go
+package main
+
+import (
+    "github.com/gofiber/fiber/v2"
+    "github.com/gofiber/fiber/v2/middleware/cors"
+    "github.com/gofiber/fiber/v2/middleware/csrf"
+    "github.com/gofiber/fiber/v2/middleware/helmet"
+    "github.com/gofiber/fiber/v2/middleware/limiter"
+)
+
+func setupSecurity(app *fiber.App) {
+    // 1. Helmet - Security headers
+    app.Use(helmet.New())
+
+    // 2. CORS
+    app.Use(cors.New(cors.Config{
+        AllowOrigins:     "https://example.com",
+        AllowMethods:     "GET,POST,PUT,DELETE",
+        AllowHeaders:     "Origin,Content-Type,Accept,Authorization",
+        AllowCredentials: true,
+    }))
+
+    // 3. CSRF Protection
+    app.Use(csrf.New())
+
+    // 4. Rate Limiting
+    app.Use(limiter.New(limiter.Config{
+        Max:        100,
+        Expiration: 1 * time.Minute,
+    }))
+}
+```
+
+---
+
+## Summary
+
+- Use **Helmet** for security headers
+- Configure **CORS** properly for your domains
+- Enable **CSRF** protection for state-changing operations
+- Use **HTTPOnly, Secure, SameSite** cookies
+- Implement **rate limiting** to prevent abuse
+- Always **validate and sanitize** user input
+- Use strong authentication (JWT, API keys)

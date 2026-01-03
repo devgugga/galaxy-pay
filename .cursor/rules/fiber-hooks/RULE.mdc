@@ -1,0 +1,315 @@
+---
+description: "Fiber hooks system: lifecycle hooks (OnRoute, OnListen, OnShutdown, etc.), registration timing, and common use cases"
+alwaysApply: false
+globs: ["cmd/app/**/*.go"]
+---
+
+# Fiber Hooks System
+
+## Available Hooks (8 Total)
+
+1. **OnRoute** - Executes on each route registration
+2. **OnName** - Executes when routes are named
+3. **OnGroup** - Executes on each group registration
+4. **OnGroupName** - Executes when groups are named
+5. **OnListen** - Executes during server startup
+6. **OnFork** - Executes during process forking
+7. **OnShutdown** - Executes after application shutdown
+8. **OnMount** - Executes after sub-app mounting
+
+---
+
+## Hook Registration Timing
+
+### ⚠️ CRITICAL: Register hooks BEFORE defining routes
+
+**❌ Incorrect Order:**
+
+```go
+app := fiber.New()
+
+// Define routes first
+app.Get("/users", getUsers)
+
+// Hook won't capture the route above
+app.Hooks().OnRoute(func(r fiber.Route) error {
+    log.Printf("Route: %s %s", r.Method, r.Path)
+    return nil
+})
+```
+
+**✅ Correct Order:**
+
+```go
+app := fiber.New()
+
+// Register hooks FIRST
+app.Hooks().OnRoute(func(r fiber.Route) error {
+    log.Printf("Route: %s %s", r.Method, r.Path)
+    return nil
+})
+
+// Then define routes
+app.Get("/users", getUsers) // Will trigger OnRoute hook
+```
+
+---
+
+## OnRoute & OnName Hooks
+
+### Route Registration Tracking
+
+```go
+func main() {
+    app := fiber.New()
+
+    // Track all route registrations
+    app.Hooks().OnRoute(func(r fiber.Route) error {
+        log.Printf("Registered route: %s %s -> %s",
+            r.Method,
+            r.Path,
+            r.Name,
+        )
+        return nil
+    })
+
+    // Enforce naming conventions
+    app.Hooks().OnName(func(r fiber.Route) error {
+        if !strings.HasPrefix(r.Name, "api.") {
+            log.Printf("Warning: Route %s doesn't follow naming convention", r.Name)
+        }
+        return nil
+    })
+
+    // Define routes
+    app.Get("/users", getUsers).Name("api.users.list")
+    app.Get("/users/:id", getUser).Name("api.users.get")
+    app.Post("/users", createUser).Name("api.users.create")
+
+    app.Listen(":8080")
+}
+```
+
+---
+
+## OnGroup & OnGroupName Hooks
+
+```go
+app.Hooks().OnGroup(func(g fiber.Group) error {
+    log.Printf("Group registered: %s", g.Prefix)
+    return nil
+})
+
+app.Hooks().OnGroupName(func(g fiber.Group) error {
+    log.Printf("Group named: %s -> %s", g.Prefix, g.Name)
+    return nil
+})
+
+// Define groups
+api := app.Group("/api")
+v1 := api.Group("/v1").Name("api.v1")
+v2 := api.Group("/v2").Name("api.v2")
+```
+
+---
+
+## OnListen Hook
+
+### Server Startup Information
+
+```go
+app.Hooks().OnListen(func(data fiber.ListenData) error {
+    log.Printf("Server started successfully!")
+    log.Printf("Scheme: %s", data.Scheme)
+    log.Printf("Host: %s", data.Host)
+    log.Printf("Port: %s", data.Port)
+
+    // Can be used for:
+    // - Sending startup notification
+    // - Registering with service discovery
+    // - Health check initialization
+
+    return nil
+})
+
+app.Listen(":8080")
+// Output:
+// Server started successfully!
+// Scheme: http
+// Host: 0.0.0.0
+// Port: 8080
+```
+
+---
+
+## OnShutdown Hook
+
+### Cleanup Operations
+
+```go
+app.Hooks().OnShutdown(func() error {
+    log.Println("Server shutting down...")
+
+    // Cleanup operations:
+    // - Close database connections
+    // - Flush logs
+    // - Release resources
+    // - Notify monitoring services
+
+    if err := db.Close(); err != nil {
+        log.Printf("Error closing database: %v", err)
+    }
+
+    if err := cache.Close(); err != nil {
+        log.Printf("Error closing cache: %v", err)
+    }
+
+    log.Println("Cleanup complete")
+    return nil
+})
+
+// Trigger shutdown
+app.Shutdown()
+```
+
+---
+
+## OnMount Hook
+
+### Sub-Application Mounting
+
+```go
+// Create main app
+main := fiber.New()
+
+// Create sub-app
+sub := fiber.New()
+
+sub.Hooks().OnMount(func(parent *fiber.App) error {
+    log.Printf("Sub-app mounted to parent")
+    // Access parent app configuration
+    return nil
+})
+
+// Define sub-app routes
+sub.Get("/users", getUsers)
+
+// Mount sub-app
+main.Mount("/api", sub)
+
+// Routes will be: /api/users
+```
+
+**⚠️ Mount-Sensitive Hooks:**
+
+When using `OnRoute`, `OnName`, `OnGroup`, or `OnGroupName` on a sub-app, **paths will include the mount prefix**.
+
+```go
+sub := fiber.New()
+
+sub.Hooks().OnRoute(func(r fiber.Route) error {
+    log.Printf("Route: %s", r.Path)
+    return nil
+})
+
+sub.Get("/users", getUsers)
+
+main := fiber.New()
+main.Mount("/api/v1", sub)
+
+// Hook will log: "/api/v1/users" (includes mount prefix)
+```
+
+---
+
+## Common Use Cases
+
+### 1. Route Documentation Generation
+
+```go
+var routes []RouteInfo
+
+app.Hooks().OnRoute(func(r fiber.Route) error {
+    routes = append(routes, RouteInfo{
+        Method: r.Method,
+        Path:   r.Path,
+        Name:   r.Name,
+    })
+    return nil
+})
+
+// After all routes defined, generate docs
+generateSwaggerDocs(routes)
+```
+
+### 2. Naming Convention Enforcement
+
+```go
+app.Hooks().OnName(func(r fiber.Route) error {
+    // Enforce format: "module.resource.action"
+    parts := strings.Split(r.Name, ".")
+    if len(parts) != 3 {
+        return fmt.Errorf("route name %s doesn't follow convention", r.Name)
+    }
+    return nil
+})
+```
+
+### 3. Service Registration
+
+```go
+app.Hooks().OnListen(func(data fiber.ListenData) error {
+    // Register with service discovery
+    return consul.Register(ServiceInfo{
+        Name: "galaxy-pay-api",
+        Host: data.Host,
+        Port: data.Port,
+    })
+})
+```
+
+### 4. Lifecycle Logging
+
+```go
+app.Hooks().OnRoute(func(r fiber.Route) error {
+    log.Printf("[ROUTE] %s %s", r.Method, r.Path)
+    return nil
+})
+
+app.Hooks().OnListen(func(data fiber.ListenData) error {
+    log.Printf("[LISTEN] %s://%s:%s", data.Scheme, data.Host, data.Port)
+    return nil
+})
+
+app.Hooks().OnShutdown(func() error {
+    log.Printf("[SHUTDOWN] Server stopped")
+    return nil
+})
+```
+
+---
+
+## Best Practices
+
+### DO ✅
+- Register hooks before defining routes/groups
+- Keep hook logic lightweight
+- Use OnListen for startup initialization
+- Use OnShutdown for cleanup operations
+- Return meaningful errors from hooks
+
+### DON'T ❌
+- Register hooks after defining routes
+- Perform heavy computations in hooks (delays startup)
+- Assume hooks will capture routes defined before hook registration
+
+---
+
+## Summary
+
+- **8 hooks available** for different lifecycle events
+- Register hooks **BEFORE** defining routes/groups
+- Use **OnListen** for startup tasks
+- Use **OnShutdown** for cleanup
+- Keep hook logic **lightweight**
+- Mount-sensitive hooks include prefix in paths

@@ -1,0 +1,242 @@
+---
+description: "Fiber testing patterns: handler testing with app.Test(), middleware testing, integration tests, and mock setup"
+alwaysApply: false
+globs: ["**/*_test.go"]
+---
+
+# Fiber Testing Patterns
+
+## Handler Testing
+
+```go
+package handlers_test
+
+import (
+    "bytes"
+    "encoding/json"
+    "net/http/httptest"
+    "testing"
+
+    "github.com/gofiber/fiber/v2"
+    "github.com/stretchr/testify/assert"
+)
+
+func TestGetUser(t *testing.T) {
+    // Create test app
+    app := fiber.New()
+
+    // Setup routes
+    app.Get("/users/:id", getUser)
+
+    // Test cases
+    tests := []struct {
+        name           string
+        userID         string
+        expectedStatus int
+        expectedBody   map[string]interface{}
+    }{
+        {
+            name:           "Valid user ID",
+            userID:         "123",
+            expectedStatus: 200,
+            expectedBody: map[string]interface{}{
+                "id":   "123",
+                "name": "John Doe",
+            },
+        },
+        {
+            name:           "Invalid user ID",
+            userID:         "999",
+            expectedStatus: 404,
+            expectedBody: map[string]interface{}{
+                "error": "User not found",
+            },
+        },
+    }
+
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            // Create request
+            req := httptest.NewRequest("GET", "/users/"+tt.userID, nil)
+
+            // Perform request
+            resp, err := app.Test(req)
+            assert.NoError(t, err)
+
+            // Check status code
+            assert.Equal(t, tt.expectedStatus, resp.StatusCode)
+
+            // Parse response body
+            var body map[string]interface{}
+            json.NewDecoder(resp.Body).Decode(&body)
+
+            // Check response body
+            assert.Equal(t, tt.expectedBody, body)
+        })
+    }
+}
+
+func TestCreateUser(t *testing.T) {
+    app := fiber.New()
+    app.Post("/users", createUser)
+
+    // Create request body
+    userData := map[string]interface{}{
+        "name":  "Jane Doe",
+        "email": "jane@example.com",
+    }
+
+    jsonData, _ := json.Marshal(userData)
+
+    // Create request
+    req := httptest.NewRequest("POST", "/users", bytes.NewReader(jsonData))
+    req.Header.Set("Content-Type", "application/json")
+
+    // Perform request
+    resp, err := app.Test(req)
+    assert.NoError(t, err)
+    assert.Equal(t, 201, resp.StatusCode)
+
+    // Parse response
+    var response map[string]interface{}
+    json.NewDecoder(resp.Body).Decode(&response)
+
+    assert.Equal(t, userData["name"], response["name"])
+    assert.Equal(t, userData["email"], response["email"])
+}
+```
+
+---
+
+## Middleware Testing
+
+```go
+func TestAuthMiddleware(t *testing.T) {
+    app := fiber.New()
+
+    // Apply middleware
+    app.Use(authMiddleware)
+
+    // Test route
+    app.Get("/protected", func(c *fiber.Ctx) error {
+        return c.SendString("Protected resource")
+    })
+
+    t.Run("Without token", func(t *testing.T) {
+        req := httptest.NewRequest("GET", "/protected", nil)
+        resp, _ := app.Test(req)
+
+        assert.Equal(t, 401, resp.StatusCode)
+    })
+
+    t.Run("With valid token", func(t *testing.T) {
+        req := httptest.NewRequest("GET", "/protected", nil)
+        req.Header.Set("Authorization", "Bearer valid-token")
+
+        resp, _ := app.Test(req)
+
+        assert.Equal(t, 200, resp.StatusCode)
+    })
+
+    t.Run("With invalid token", func(t *testing.T) {
+        req := httptest.NewRequest("GET", "/protected", nil)
+        req.Header.Set("Authorization", "Bearer invalid-token")
+
+        resp, _ := app.Test(req)
+
+        assert.Equal(t, 401, resp.StatusCode)
+    })
+}
+```
+
+---
+
+## Integration Testing
+
+```go
+func TestPaymentFlow(t *testing.T) {
+    // Setup test database
+    db := setupTestDB()
+    defer db.Close()
+
+    // Create app
+    app := setupApp(db)
+
+    // Step 1: Create user
+    userData := map[string]string{
+        "name":  "Test User",
+        "email": "test@example.com",
+    }
+    userJSON, _ := json.Marshal(userData)
+
+    req := httptest.NewRequest("POST", "/users", bytes.NewReader(userJSON))
+    req.Header.Set("Content-Type", "application/json")
+
+    resp, _ := app.Test(req)
+    assert.Equal(t, 201, resp.StatusCode)
+
+    var user map[string]interface{}
+    json.NewDecoder(resp.Body).Decode(&user)
+    userID := user["id"].(string)
+
+    // Step 2: Create payment
+    paymentData := map[string]interface{}{
+        "userId": userID,
+        "amount": 100.00,
+        "method": "credit_card",
+    }
+    paymentJSON, _ := json.Marshal(paymentData)
+
+    req = httptest.NewRequest("POST", "/payments", bytes.NewReader(paymentJSON))
+    req.Header.Set("Content-Type", "application/json")
+
+    resp, _ = app.Test(req)
+    assert.Equal(t, 201, resp.StatusCode)
+
+    // Step 3: Verify payment in database
+    var payment Payment
+    db.First(&payment, "user_id = ?", userID)
+    assert.Equal(t, 100.00, payment.Amount)
+}
+```
+
+---
+
+## Test Helpers
+
+```go
+// Helper to create test app
+func createTestApp() *fiber.App {
+    app := fiber.New(fiber.Config{
+        ErrorHandler: testErrorHandler,
+    })
+
+    setupRoutes(app)
+
+    return app
+}
+
+// Helper to create JSON request
+func createJSONRequest(method, url string, body interface{}) *http.Request {
+    jsonData, _ := json.Marshal(body)
+    req := httptest.NewRequest(method, url, bytes.NewReader(jsonData))
+    req.Header.Set("Content-Type", "application/json")
+    return req
+}
+
+// Helper to parse JSON response
+func parseJSONResponse(resp *http.Response, v interface{}) error {
+    return json.NewDecoder(resp.Body).Decode(v)
+}
+```
+
+---
+
+## Summary
+
+- Use **app.Test()** to test handlers
+- Use **httptest.NewRequest()** to create test requests
+- Test **different scenarios** with table-driven tests
+- Test **middleware** separately
+- Create **integration tests** for full workflows
+- Use **test helpers** to reduce boilerplate

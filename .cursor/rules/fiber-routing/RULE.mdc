@@ -1,0 +1,499 @@
+---
+description: "Fiber routing patterns, dynamic parameters, route constraints, grouping, and Context API for request/response handling"
+alwaysApply: false
+globs: ["internal/handlers/**/*.go", "cmd/app/**/*.go"]
+---
+
+# Fiber Routing & Context API
+
+## Route Definition Patterns
+
+### HTTP Methods
+
+```go
+// Standard methods
+app.Get("/users", listUsers)           // GET
+app.Post("/users", createUser)         // POST
+app.Put("/users/:id", updateUser)      // PUT
+app.Patch("/users/:id", patchUser)     // PATCH
+app.Delete("/users/:id", deleteUser)   // DELETE
+
+// Special methods
+app.All("/admin", adminHandler)        // All HTTP methods
+app.Add("CUSTOM", "/webhook", handler) // Custom HTTP method
+```
+
+---
+
+## Dynamic Parameters
+
+```go
+// Named parameters
+app.Get("/user/:id", func(c *fiber.Ctx) error {
+    id := c.Params("id")
+    return c.SendString("User ID: " + id)
+})
+// Matches: /user/123, /user/abc
+
+// Optional parameters
+app.Get("/user/:id?", func(c *fiber.Ctx) error {
+    id := c.Params("id", "guest")
+    return c.SendString("User: " + id)
+})
+// Matches: /user/123 AND /user
+
+// Greedy (non-optional)
+app.Get("/post/:category+", func(c *fiber.Ctx) error {
+    category := c.Params("category") // "tech/golang/fiber"
+    return c.SendString("Category: " + category)
+})
+
+// Wildcards (optional greedy)
+app.Get("/files/*", func(c *fiber.Ctx) error {
+    filepath := c.Params("*")
+    return c.SendFile("./" + filepath)
+})
+
+// Parameters with separators
+app.Get("/flights/:from-:to", func(c *fiber.Ctx) error {
+    return c.JSON(fiber.Map{
+        "from": c.Params("from"),
+        "to": c.Params("to"),
+    })
+})
+```
+
+---
+
+## Route Constraints (v2.37.0+)
+
+```go
+// Type constraints
+app.Get("/user/:id<int>", getUser)               // Only integers
+app.Get("/active/:status<bool>", filterByStatus) // true/false only
+app.Get("/order/:uuid<guid>", getOrder)          // UUID format
+app.Get("/price/:amount<float>", getByPrice)     // Float numbers
+
+// Length constraints
+app.Get("/code/:value<minLen(5)>", handler)      // Min 5 chars
+app.Get("/code/:value<maxLen(10)>", handler)     // Max 10 chars
+app.Get("/code/:value<len(8)>", handler)         // Exactly 8 chars
+
+// Numeric constraints
+app.Get("/age/:value<min(18)>", handler)         // >= 18
+app.Get("/age/:value<max(100)>", handler)        // <= 100
+app.Get("/age/:value<range(18,65)>", handler)    // Between 18-65
+
+// String & DateTime
+app.Get("/name/:value<alpha>", handler)                      // Letters only
+app.Get("/date/:value<datetime(2006-01-02)>", handler)       // Date format
+
+// Regex
+app.Get("/code/:value<regex(^[A-Z]{3}\\d{3}$)>", handler)   // ABC123 format
+
+// Multiple constraints (semicolon-separated)
+app.Get("/product/:id<int;min(1);max(9999)>", getProduct)
+```
+
+---
+
+## Route Grouping
+
+### Basic Grouping
+
+```go
+func setupRoutes(app *fiber.App) {
+    // API v1 group
+    api := app.Group("/api")
+    v1 := api.Group("/v1")
+
+    // User routes
+    users := v1.Group("/users")
+    users.Get("/", listUsers)            // GET /api/v1/users
+    users.Get("/:id<int>", getUser)      // GET /api/v1/users/123
+    users.Post("/", createUser)           // POST /api/v1/users
+    users.Put("/:id<int>", updateUser)    // PUT /api/v1/users/123
+    users.Delete("/:id<int>", deleteUser) // DELETE /api/v1/users/123
+
+    // Payment routes with middleware
+    payments := v1.Group("/payments", authMiddleware)
+    payments.Get("/", listPayments)
+    payments.Post("/", processPayment)
+    payments.Get("/:id<guid>", getPayment)
+
+    // API v2 group (future)
+    v2 := api.Group("/v2")
+    v2.Get("/users", listUsersV2)
+
+    // Health checks (outside API versioning)
+    app.Get("/health", healthCheck)
+    app.Get("/ready", readyCheck)
+}
+```
+
+---
+
+## Static Files
+
+```go
+// Serve files from ./public directory
+app.Static("/", "./public")
+
+// Serve with prefix
+app.Static("/static", "./assets")
+// URL: /static/css/style.css → File: ./assets/css/style.css
+
+// With configuration
+app.Static("/files", "./storage", fiber.Static{
+    Compress:      true,
+    ByteRange:     true,
+    Browse:        false, // Disable directory browsing
+    Index:         "index.html",
+    CacheDuration: 24 * time.Hour,
+    MaxAge:        3600,
+})
+```
+
+---
+
+## Context API - Request Data
+
+### Query Parameters
+
+```go
+app.Get("/search", func(c *fiber.Ctx) error {
+    // String with default
+    query := c.Query("q", "default")
+
+    // Typed methods
+    page := c.QueryInt("page", 1)
+    limit := c.QueryInt("limit", 10)
+    active := c.QueryBool("active", true)
+    price := c.QueryFloat("price", 0.0)
+
+    return c.JSON(fiber.Map{
+        "query": query,
+        "page": page,
+        "limit": limit,
+        "active": active,
+        "price": price,
+    })
+})
+// GET /search?q=fiber&page=2&limit=20&active=false&price=99.99
+```
+
+### Route Parameters
+
+```go
+app.Get("/user/:id/post/:postId", func(c *fiber.Ctx) error {
+    userID := c.Params("id")
+    postID := c.Params("postId")
+
+    // With default value
+    category := c.Params("category", "general")
+
+    return c.JSON(fiber.Map{
+        "userId": userID,
+        "postId": postID,
+    })
+})
+```
+
+```go
+// Headers (case-insensitive)
+authHeader := c.Get("Authorization")
+userAgent := c.Get("User-Agent")
+contentType := c.Get("Content-Type", "application/json")
+
+// Cookies
+sessionID := c.Cookies("session_id")
+token := c.Cookies("token", "default-token")
+
+// JSON Body Parser
+type User struct {
+    Name  string `json:"name"`
+    Email string `json:"email"`
+    Age   int    `json:"age"`
+}
+
+app.Post("/users", func(c *fiber.Ctx) error {
+    user := new(User)
+    if err := c.BodyParser(user); err != nil {
+        return c.Status(400).JSON(fiber.Map{"error": "Cannot parse JSON"})
+    }
+    return c.Status(201).JSON(user)
+})
+
+// Query Parser
+type SearchParams struct {
+    Query  string   `query:"q"`
+    Page   int      `query:"page"`
+    Limit  int      `query:"limit"`
+}
+
+app.Get("/search", func(c *fiber.Ctx) error {
+    params := new(SearchParams)
+    if err := c.QueryParser(params); err != nil {
+        return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+    }
+    return c.JSON(params)
+})
+```
+
+```go
+// File Upload
+file, err := c.FormFile("document")
+if err != nil {
+    return c.Status(400).JSON(fiber.Map{"error": "No file uploaded"})
+}
+c.SaveFile(file, "./uploads/"+file.Filename)
+
+// Multiple Files
+form, _ := c.MultipartForm()
+files := form.File["documents"]
+for _, file := range files {
+    c.SaveFile(file, "./uploads/"+file.Filename)
+}
+```
+
+---
+
+## Context API - Response Methods
+
+### JSON Response
+
+```go
+app.Get("/user", func(c *fiber.Ctx) error {
+    return c.JSON(fiber.Map{
+        "name":  "John Doe",
+        "email": "john@example.com",
+    })
+})
+
+// With status code (chainable)
+app.Post("/user", func(c *fiber.Ctx) error {
+    return c.Status(201).JSON(fiber.Map{
+        "message": "User created",
+    })
+})
+```
+
+### String Response
+
+```go
+app.Get("/hello", func(c *fiber.Ctx) error {
+    return c.SendString("Hello, World!")
+})
+
+// With status
+app.Get("/error", func(c *fiber.Ctx) error {
+    return c.Status(404).SendString("Not Found")
+})
+```
+
+### File Response
+
+```go
+app.Get("/download", func(c *fiber.Ctx) error {
+    // Send file with auto MIME type
+    return c.SendFile("./documents/report.pdf")
+})
+
+// Trigger download with custom filename
+app.Get("/download", func(c *fiber.Ctx) error {
+    return c.Download("./documents/report.pdf", "monthly-report.pdf")
+})
+```
+
+### Redirect
+
+```go
+app.Get("/old-path", func(c *fiber.Ctx) error {
+    // 302 redirect (default)
+    return c.Redirect("/new-path")
+})
+
+// 301 permanent redirect
+app.Get("/old-page", func(c *fiber.Ctx) error {
+    return c.Redirect("/new-page", 301)
+})
+```
+
+### Status Only
+
+```go
+app.Delete("/user/:id", func(c *fiber.Ctx) error {
+    // Delete user...
+
+    // 204 No Content
+    return c.SendStatus(204)
+})
+```
+
+### Set Headers
+
+```go
+app.Get("/api", func(c *fiber.Ctx) error {
+    c.Set("X-API-Version", "1.0.0")
+    c.Set("X-Rate-Limit", "100")
+
+    return c.JSON(fiber.Map{"status": "ok"})
+})
+```
+
+### Set Cookies
+
+```go
+app.Post("/login", func(c *fiber.Ctx) error {
+    // Simple cookie
+    c.Cookie(&fiber.Cookie{
+        Name:  "session_id",
+        Value: "abc123",
+    })
+
+    // Secure cookie
+    c.Cookie(&fiber.Cookie{
+        Name:     "token",
+        Value:    "xyz789",
+        Expires:  time.Now().Add(24 * time.Hour),
+        HTTPOnly: true,
+        Secure:   true,
+        SameSite: "Lax",
+    })
+
+    return c.SendString("Logged in")
+})
+```
+
+---
+
+## Locals - Request-Scoped Data
+
+### Sharing Data Between Middleware
+
+```go
+// Middleware
+func authMiddleware(c *fiber.Ctx) error {
+    token := c.Get("Authorization")
+
+    user := verifyToken(token)
+    if user == nil {
+        return c.Status(401).JSON(fiber.Map{
+            "error": "Unauthorized",
+        })
+    }
+
+    // Store user in context
+    c.Locals("user", user)
+
+    return c.Next()
+}
+
+// Handler
+app.Get("/profile", authMiddleware, func(c *fiber.Ctx) error {
+    user := c.Locals("user").(*User)
+
+    return c.JSON(fiber.Map{
+        "name":  user.Name,
+        "email": user.Email,
+    })
+})
+```
+
+### Type-Safe Locals
+
+```go
+// Use non-exported type to prevent collisions
+type contextKey string
+
+const userKey contextKey = "user"
+
+func authMiddleware(c *fiber.Ctx) error {
+    user := getCurrentUser(c)
+    c.Locals(userKey, user)
+    return c.Next()
+}
+
+func handler(c *fiber.Ctx) error {
+    user, ok := c.Locals(userKey).(*User)
+    if !ok {
+        return c.Status(500).SendString("Internal error")
+    }
+
+    return c.JSON(user)
+})
+```
+
+---
+
+## Content Negotiation
+
+```go
+app.Get("/resource", func(c *fiber.Ctx) error {
+    // Check what client accepts
+    accepts := c.Accepts("json", "xml", "html")
+
+    switch accepts {
+    case "json":
+        return c.JSON(fiber.Map{"format": "json"})
+    case "xml":
+        return c.SendString("<format>xml</format>")
+    case "html":
+        return c.SendString("<h1>HTML</h1>")
+    default:
+        return c.SendStatus(406) // Not Acceptable
+    }
+})
+
+// Other accept methods
+app.Get("/data", func(c *fiber.Ctx) error {
+    charset := c.AcceptsCharsets("utf-8", "iso-8859-1")
+    encoding := c.AcceptsEncodings("gzip", "br", "deflate")
+    language := c.AcceptsLanguages("en", "pt-BR", "es")
+
+    return c.JSON(fiber.Map{
+        "charset":  charset,
+        "encoding": encoding,
+        "language": language,
+    })
+})
+```
+
+---
+
+## Anti-Patterns
+
+### ❌ DON'T: Add routes dynamically after startup
+
+```go
+app := fiber.New()
+app.Listen(":8080")
+
+// Later...
+app.Get("/dynamic", handler) // ❌ Won't work!
+```
+
+**Why**: Routes must be defined before `app.Listen()` for performance.
+
+### ❌ DON'T: Set headers after sending response
+
+```go
+app.Get("/api", func(c *fiber.Ctx) error {
+    c.JSON(fiber.Map{"status": "ok"})
+
+    c.Set("X-API-Version", "1.0") // ❌ Too late!
+
+    return nil
+})
+```
+
+---
+
+## Summary
+
+- Use route constraints for validation (`<int>`, `<guid>`, `<regex>`)
+- Group related routes for organization
+- Use typed query methods (`QueryInt`, `QueryBool`, etc.)
+- Parse body once per request
+- Use `c.Locals()` for request-scoped data
+- Define all routes before `app.Listen()`

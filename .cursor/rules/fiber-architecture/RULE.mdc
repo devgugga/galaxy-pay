@@ -1,0 +1,349 @@
+---
+description: "Integrating Fiber with Galaxy Pay architecture: layered pattern (handlers → services → repositories), dependency injection, and router organization"
+alwaysApply: false
+globs: ["internal/handlers/**/*.go", "internal/services/**/*.go", "cmd/app/**/*.go"]
+---
+
+# Fiber Integration with Galaxy Pay Architecture
+
+## Project Structure
+
+```
+internal/
+├── config/           # Configuration management
+├── handlers/         # Fiber handlers (HTTP layer)
+├── services/         # Business logic
+└── repositories/     # Data access layer
+```
+
+---
+
+## Layered Architecture Pattern
+
+**Flow**: Handler → Service → Repository → Database
+
+### Handler Layer (HTTP)
+
+```go
+package handlers
+
+import (
+    "github.com/gofiber/fiber/v2"
+    "github.com/devgugga/galaxy-pay/internal/services"
+)
+
+type UserHandler struct {
+    userService *services.UserService
+}
+
+func NewUserHandler(userService *services.UserService) *UserHandler {
+    return &UserHandler{
+        userService: userService,
+    }
+}
+
+func (h *UserHandler) List(c *fiber.Ctx) error {
+    users, err := h.userService.ListUsers()
+    if err != nil {
+        return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+    }
+
+    return c.JSON(users)
+}
+
+func (h *UserHandler) Get(c *fiber.Ctx) error {
+    id := c.Params("id")
+
+    user, err := h.userService.GetUser(id)
+    if err != nil {
+        return c.Status(404).JSON(fiber.Map{"error": "User not found"})
+    }
+
+    return c.JSON(user)
+}
+
+func (h *UserHandler) Create(c *fiber.Ctx) error {
+    req := new(CreateUserRequest)
+
+    if err := c.BodyParser(req); err != nil {
+        return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+    }
+
+    user, err := h.userService.CreateUser(req)
+    if err != nil {
+        return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+    }
+
+    return c.Status(201).JSON(user)
+}
+```
+
+### Service Layer (Business Logic)
+
+```go
+package services
+
+import (
+    "github.com/devgugga/galaxy-pay/internal/repositories"
+)
+
+type UserService struct {
+    userRepo *repositories.UserRepository
+}
+
+func NewUserService(userRepo *repositories.UserRepository) *UserService {
+    return &UserService{
+        userRepo: userRepo,
+    }
+}
+
+func (s *UserService) ListUsers() ([]*User, error) {
+    return s.userRepo.FindAll()
+}
+
+func (s *UserService) GetUser(id string) (*User, error) {
+    user, err := s.userRepo.FindByID(id)
+    if err != nil {
+        return nil, err
+    }
+
+    if user == nil {
+        return nil, ErrUserNotFound
+    }
+
+    return user, nil
+}
+
+func (s *UserService) CreateUser(req *CreateUserRequest) (*User, error) {
+    // Business logic and validation
+    user := &User{
+        Name:  req.Name,
+        Email: req.Email,
+    }
+
+    return s.userRepo.Save(user)
+}
+```
+
+---
+
+## Main Application Setup
+
+```go
+package main
+
+import (
+    "log"
+    "os"
+
+    "github.com/gofiber/fiber/v2"
+    "github.com/gofiber/fiber/v2/middleware/logger"
+    "github.com/gofiber/fiber/v2/middleware/recover"
+
+    "github.com/devgugga/galaxy-pay/internal/config"
+    "github.com/devgugga/galaxy-pay/internal/handlers"
+    "github.com/devgugga/galaxy-pay/internal/repositories"
+    "github.com/devgugga/galaxy-pay/internal/services"
+)
+
+func main() {
+    // Load config
+    cfg := config.Load()
+
+    // Initialize database
+    db := initDB(cfg)
+
+    // Initialize repositories
+    userRepo := repositories.NewUserRepository(db)
+    paymentRepo := repositories.NewPaymentRepository(db)
+
+    // Initialize services
+    userService := services.NewUserService(userRepo)
+    paymentService := services.NewPaymentService(paymentRepo)
+
+    // Initialize handlers
+    userHandler := handlers.NewUserHandler(userService)
+    paymentHandler := handlers.NewPaymentHandler(paymentService)
+
+    // Create Fiber app
+    app := fiber.New(fiber.Config{
+        AppName:      "Galaxy Pay v1.0.0",
+        ErrorHandler: customErrorHandler,
+    })
+
+    // Setup middleware
+    app.Use(recover.New())
+    app.Use(logger.New())
+
+    // Setup routes
+    setupRoutes(app, userHandler, paymentHandler)
+
+    // Start server
+    port := cfg.Port
+    log.Printf("Starting server on port %s", port)
+    log.Fatal(app.Listen(":" + port))
+}
+
+func setupRoutes(
+    app *fiber.App,
+    userHandler *handlers.UserHandler,
+    paymentHandler *handlers.PaymentHandler,
+) {
+    // Health checks
+    app.Get("/health", healthCheck)
+    app.Get("/ready", readyCheck)
+
+    // API routes
+    api := app.Group("/api")
+    v1 := api.Group("/v1")
+
+    // User routes
+    users := v1.Group("/users")
+    users.Get("/", userHandler.List)
+    users.Get("/:id", userHandler.Get)
+    users.Post("/", userHandler.Create)
+    users.Put("/:id", userHandler.Update)
+    users.Delete("/:id", userHandler.Delete)
+
+    // Payment routes
+    payments := v1.Group("/payments")
+    payments.Get("/", paymentHandler.List)
+    payments.Post("/", paymentHandler.Create)
+    payments.Get("/:id", paymentHandler.Get)
+}
+
+func customErrorHandler(c *fiber.Ctx, err error) error {
+    code := 500
+    if e, ok := err.(*fiber.Error); ok {
+        code = e.Code
+    }
+
+    return c.Status(code).JSON(fiber.Map{
+        "error": err.Error(),
+    })
+}
+
+func healthCheck(c *fiber.Ctx) error {
+    return c.JSON(fiber.Map{"status": "healthy"})
+}
+
+func readyCheck(c *fiber.Ctx) error {
+    return c.JSON(fiber.Map{"status": "ready"})
+}
+```
+
+---
+
+## Dependency Injection Pattern
+
+```go
+// Container holds all dependencies
+type Container struct {
+    DB              *sql.DB
+    UserRepo        *repositories.UserRepository
+    PaymentRepo     *repositories.PaymentRepository
+    UserService     *services.UserService
+    PaymentService  *services.PaymentService
+    UserHandler     *handlers.UserHandler
+    PaymentHandler  *handlers.PaymentHandler
+}
+
+func NewContainer(cfg *config.Config) (*Container, error) {
+    // Initialize database
+    db, err := initDB(cfg)
+    if err != nil {
+        return nil, err
+    }
+
+    // Initialize repositories
+    userRepo := repositories.NewUserRepository(db)
+    paymentRepo := repositories.NewPaymentRepository(db)
+
+    // Initialize services
+    userService := services.NewUserService(userRepo)
+    paymentService := services.NewPaymentService(paymentRepo)
+
+    // Initialize handlers
+    userHandler := handlers.NewUserHandler(userService)
+    paymentHandler := handlers.NewPaymentHandler(paymentService)
+
+    return &Container{
+        DB:             db,
+        UserRepo:       userRepo,
+        PaymentRepo:    paymentRepo,
+        UserService:    userService,
+        PaymentService: paymentService,
+        UserHandler:    userHandler,
+        PaymentHandler: paymentHandler,
+    }, nil
+}
+
+func main() {
+    cfg := config.Load()
+
+    container, err := NewContainer(cfg)
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer container.DB.Close()
+
+    app := fiber.New()
+
+    setupRoutes(app, container.UserHandler, container.PaymentHandler)
+
+    log.Fatal(app.Listen(":" + cfg.Port))
+}
+```
+
+---
+
+## Router Organization
+
+```go
+// internal/routes/routes.go
+package routes
+
+func Setup(app *fiber.App, container *Container) {
+    // Health checks
+    app.Get("/health", healthCheck)
+    app.Get("/ready", readyCheck)
+
+    // API routes
+    api := app.Group("/api")
+
+    // V1 routes
+    v1 := api.Group("/v1")
+    setupUserRoutes(v1, container.UserHandler)
+    setupPaymentRoutes(v1, container.PaymentHandler)
+
+    // V2 routes (future)
+    // v2 := api.Group("/v2")
+}
+
+func setupUserRoutes(router fiber.Router, h *handlers.UserHandler) {
+    users := router.Group("/users")
+    users.Get("/", h.List)
+    users.Get("/:id", h.Get)
+    users.Post("/", h.Create)
+    users.Put("/:id", h.Update)
+    users.Delete("/:id", h.Delete)
+}
+
+func setupPaymentRoutes(router fiber.Router, h *handlers.PaymentHandler) {
+    payments := router.Group("/payments")
+    payments.Get("/", h.List)
+    payments.Post("/", h.Create)
+    payments.Get("/:id", h.Get)
+}
+```
+
+---
+
+## Summary
+
+- **Handlers** are thin - only handle HTTP concerns
+- **Services** contain business logic
+- **Repositories** handle data access
+- Use **dependency injection** for clean architecture
+- **Organize routes** by domain/resource
+- Keep **main.go** minimal - wire dependencies
