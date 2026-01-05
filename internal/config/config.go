@@ -24,6 +24,21 @@ type Config struct {
 
 	// Body limit in bytes
 	BodyLimit int
+
+	// Logging
+	LogLevel string
+
+	// Redis configuration
+	RedisHost         string
+	RedisPort         string
+	RedisPassword     string
+	RedisDB           int
+	RedisPoolSize     int
+	RedisMinIdleConns int
+
+	// Rate limiting
+	RateLimitMax      int
+	RateLimitDuration time.Duration
 }
 
 // Load loads configuration from environment variables
@@ -38,6 +53,7 @@ func Load() (*Config, error) {
 		AppEnv:     getEnv("APP_ENV", "development"),
 		Host:       getEnv("HOST", "0.0.0.0"),
 		Port:       getEnv("PORT", "8080"),
+		LogLevel:   getEnv("LOG_LEVEL", "info"),
 	}
 
 	// Parse timeouts
@@ -52,6 +68,19 @@ func Load() (*Config, error) {
 	// Parse body limit (default 4MB)
 	bodyLimitMB := getEnvAsInt("BODY_LIMIT_MB", 4)
 	cfg.BodyLimit = bodyLimitMB * 1024 * 1024
+
+	// Redis configuration
+	cfg.RedisHost = getEnv("REDIS_HOST", "localhost")
+	cfg.RedisPort = getEnv("REDIS_PORT", "6379")
+	cfg.RedisPassword = getEnv("REDIS_PASSWORD", "")
+	cfg.RedisDB = getEnvAsInt("REDIS_DB", 0)
+	cfg.RedisPoolSize = getEnvAsInt("REDIS_POOL_SIZE", 10)
+	cfg.RedisMinIdleConns = getEnvAsInt("REDIS_MIN_IDLE_CONNS", 5)
+
+	// Rate limiting
+	cfg.RateLimitMax = getEnvAsInt("RATE_LIMIT_MAX", 100)
+	rateLimitDurationSeconds := getEnvAsInt("RATE_LIMIT_DURATION", 60)
+	cfg.RateLimitDuration = time.Duration(rateLimitDurationSeconds) * time.Second
 
 	return cfg, nil
 }
@@ -92,5 +121,10 @@ func (c *Config) IsProduction() bool {
 // IsDevelopment returns true if the app is running in development
 func (c *Config) IsDevelopment() bool {
 	return c.AppEnv == "development"
+}
+
+// GetRedisAddress returns the full Redis address (host:port)
+func (c *Config) GetRedisAddress() string {
+	return fmt.Sprintf("%s:%s", c.RedisHost, c.RedisPort)
 }
 

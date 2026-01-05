@@ -1,15 +1,17 @@
 package main
 
 import (
-	"log"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/devgugga/galaxy-pay/internal/config"
+	"github.com/devgugga/galaxy-pay/internal/http/middleware"
+	"github.com/devgugga/galaxy-pay/internal/infrastructure/cache"
+	"github.com/devgugga/galaxy-pay/pkg/logger"
 	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	json "github.com/goccy/go-json"
 )
@@ -18,8 +20,38 @@ func main() {
 	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("Failed to load configuration: %v", err)
+		panic("Failed to load configuration: " + err.Error())
 	}
+
+	// Initialize logger
+	if err := logger.Init(cfg.AppEnv, cfg.LogLevel); err != nil {
+		panic("Failed to initialize logger: " + err.Error())
+	}
+	defer logger.Sync()
+
+	logger.Log.Info("Application starting",
+		logger.String("app_name", cfg.AppName),
+		logger.String("version", cfg.AppVersion),
+		logger.String("env", cfg.AppEnv),
+	)
+
+	// Initialize Redis (required - application will exit if connection fails)
+	logger.Log.Info("Connecting to Redis...",
+		logger.String("address", cfg.GetRedisAddress()),
+	)
+	if err := cache.Init(cfg); err != nil {
+		logger.Log.Fatal("Failed to initialize Redis - application cannot start without Redis",
+			logger.Error(err),
+		)
+	}
+	logger.Log.Info("Redis connected successfully")
+	defer cache.Close()
+
+	// Create idempotency store (will be used when payment routes are added)
+	// var idempotencyStore *cache.IdempotencyStore
+	// if cache.Client != nil {
+	// 	idempotencyStore = cache.NewIdempotencyStore(cache.Client, 24*time.Hour)
+	// }
 
 	// Initialize Fiber with performance config
 	app := fiber.New(fiber.Config{
@@ -51,13 +83,28 @@ func main() {
 	})
 
 	// Setup middleware (order matters!)
+	// 1. Recover (first - catches panics)
 	app.Use(recover.New(recover.Config{
 		EnableStackTrace: true,
 		StackTraceHandler: func(c *fiber.Ctx, e interface{}) {
-			log.Printf("Panic recovered: %v", e)
+			requestID := middleware.GetRequestID(c)
+			logger.WithRequestID(requestID).Error("Panic recovered",
+				logger.String("panic", fmt.Sprintf("%v", e)),
+			)
 		},
 	}))
-	app.Use(logger.New())
+
+	// 2. Request ID (early - needed by other middlewares)
+	app.Use(middleware.RequestID())
+
+	// 3. Zap Logger (uses Request ID)
+	app.Use(middleware.ZapLogger())
+
+	// 4. Rate Limiting
+	app.Use(middleware.RateLimit(cfg))
+
+	// 5. Idempotency (only for payment routes - will be added later)
+	// app.Use(middleware.Idempotency(idempotencyStore))
 
 	// Setup routes
 	setupRoutes(app, cfg)
@@ -65,9 +112,13 @@ func main() {
 	// Graceful shutdown
 	go func() {
 		address := cfg.GetServerAddress()
-		log.Printf("Server starting on %s", address)
+		logger.Log.Info("Server starting",
+			logger.String("address", address),
+		)
 		if err := app.Listen(address); err != nil {
-			log.Fatalf("Server failed to start: %v", err)
+			logger.Log.Fatal("Server failed to start",
+				logger.Error(err),
+			)
 		}
 	}()
 
@@ -75,12 +126,14 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	log.Println("Server shutting down...")
+	logger.Log.Info("Server shutting down...")
 	if err := app.ShutdownWithTimeout(30 * time.Second); err != nil {
-		log.Fatalf("Shutdown failed: %v", err)
+		logger.Log.Fatal("Shutdown failed",
+			logger.Error(err),
+		)
 	}
 
-	log.Println("Server exited")
+	logger.Log.Info("Server exited")
 }
 
 // customErrorHandler handles errors in a consistent way
@@ -94,8 +147,16 @@ func customErrorHandler(c *fiber.Ctx, err error) error {
 		message = e.Message
 	}
 
+	// Get request ID
+	requestID := middleware.GetRequestID(c)
+
 	// Log error
-	log.Printf("[ERROR] %d - %s %s: %v", code, c.Method(), c.Path(), err)
+	logger.WithRequestID(requestID).Error("HTTP Error",
+		logger.Method(c.Method()),
+		logger.Path(c.Path()),
+		logger.Status(code),
+		logger.Error(err),
+	)
 
 	return c.Status(code).JSON(fiber.Map{
 		"error":   true,
