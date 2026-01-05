@@ -1,106 +1,142 @@
 package main
 
 import (
-	"context"
-	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
-)
 
-const (
-	defaultPort = "8080"
+	"github.com/devgugga/galaxy-pay/internal/config"
+	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/logger"
+	"github.com/gofiber/fiber/v2/middleware/recover"
+	json "github.com/goccy/go-json"
 )
 
 func main() {
-	// Get port from environment or use default
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = defaultPort
+	// Load configuration
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("Failed to load configuration: %v", err)
 	}
 
-	// Create HTTP server
-	mux := http.NewServeMux()
+	// Initialize Fiber with performance config
+	app := fiber.New(fiber.Config{
+		AppName:      cfg.AppName + " v" + cfg.AppVersion,
+		ServerHeader: "Fiber",
 
-	// Health check endpoint
-	mux.HandleFunc("/health", healthHandler)
+		// Custom JSON encoder (performance)
+		JSONEncoder: json.Marshal,
+		JSONDecoder: json.Unmarshal,
 
-	// Ready endpoint
-	mux.HandleFunc("/ready", readyHandler)
+		// Error handling
+		ErrorHandler: customErrorHandler,
 
-	// Root endpoint
-	mux.HandleFunc("/", rootHandler)
+		// Performance tuning
+		Prefork:       false, // Set true for multi-process
+		CaseSensitive: true,
+		StrictRouting: false,
 
-	server := &http.Server{
-		Addr:         ":" + port,
-		Handler:      mux,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
-	}
+		// Timeouts from config
+		ReadTimeout:  cfg.ReadTimeout,
+		WriteTimeout: cfg.WriteTimeout,
+		IdleTimeout:  cfg.IdleTimeout,
 
-	// Start server in a goroutine
+		// Body limits from config
+		BodyLimit: cfg.BodyLimit,
+
+		// Disable startup message in production
+		DisableStartupMessage: cfg.IsProduction(),
+	})
+
+	// Setup middleware (order matters!)
+	app.Use(recover.New(recover.Config{
+		EnableStackTrace: true,
+		StackTraceHandler: func(c *fiber.Ctx, e interface{}) {
+			log.Printf("Panic recovered: %v", e)
+		},
+	}))
+	app.Use(logger.New())
+
+	// Setup routes
+	setupRoutes(app, cfg)
+
+	// Graceful shutdown
 	go func() {
-		log.Printf("Server starting on port %s", port)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		address := cfg.GetServerAddress()
+		log.Printf("Server starting on %s", address)
+		if err := app.Listen(address); err != nil {
 			log.Fatalf("Server failed to start: %v", err)
 		}
 	}()
 
-	// Wait for interrupt signal to gracefully shutdown the server
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
 	log.Println("Server shutting down...")
-
-	// Graceful shutdown with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	if err := server.Shutdown(ctx); err != nil {
-		log.Fatalf("Server forced to shutdown: %v", err)
+	if err := app.ShutdownWithTimeout(30 * time.Second); err != nil {
+		log.Fatalf("Shutdown failed: %v", err)
 	}
 
 	log.Println("Server exited")
 }
 
-// healthHandler handles health check requests
-func healthHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
+// customErrorHandler handles errors in a consistent way
+func customErrorHandler(c *fiber.Ctx, err error) error {
+	code := fiber.StatusInternalServerError
+	message := "Internal Server Error"
+
+	// Extract Fiber error
+	if e, ok := err.(*fiber.Error); ok {
+		code = e.Code
+		message = e.Message
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprint(w, `{"status":"healthy"}`)
+	// Log error
+	log.Printf("[ERROR] %d - %s %s: %v", code, c.Method(), c.Path(), err)
+
+	return c.Status(code).JSON(fiber.Map{
+		"error":   true,
+		"message": message,
+		"status":  code,
+		"path":    c.Path(),
+	})
+}
+
+// setupRoutes configures all application routes
+func setupRoutes(app *fiber.App, cfg *config.Config) {
+	// Health check endpoint
+	app.Get("/health", healthHandler)
+
+	// Ready endpoint
+	app.Get("/ready", readyHandler)
+
+	// Root endpoint
+	app.Get("/", rootHandler(cfg))
+}
+
+// healthHandler handles health check requests
+func healthHandler(c *fiber.Ctx) error {
+	return c.JSON(fiber.Map{
+		"status": "healthy",
+	})
 }
 
 // readyHandler handles readiness check requests
-func readyHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprint(w, `{"status":"ready"}`)
+func readyHandler(c *fiber.Ctx) error {
+	return c.JSON(fiber.Map{
+		"status": "ready",
+	})
 }
 
 // rootHandler handles root requests
-func rootHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
+func rootHandler(cfg *config.Config) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{
+			"service": "galaxy-pay",
+			"version": cfg.AppVersion,
+		})
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprint(w, `{"service":"galaxy-pay","version":"1.0.0"}`)
 }
-

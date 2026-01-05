@@ -1,0 +1,233 @@
+---
+description: "Fiber validation patterns using go-playground/validator: struct tags, custom validators, error handling, and validation middleware"
+alwaysApply: false
+globs: ["internal/http/handler/**/*.go", "internal/service/**/*.go"]
+---
+
+# Fiber Validation Patterns
+
+## Validator Setup
+
+```go
+package main
+
+import (
+    "github.com/go-playground/validator/v10"
+    "github.com/gofiber/fiber/v2"
+)
+
+// Validator wrapper
+type XValidator struct {
+    validator *validator.Validate
+}
+
+// Error response structure
+type ErrorResponse struct {
+    Error       bool        `json:"error"`
+    FailedField string      `json:"failedField"`
+    Tag         string      `json:"tag"`
+    Value       interface{} `json:"value,omitempty"`
+}
+
+// Global validator instance
+var validate = validator.New()
+
+func (v XValidator) Validate(data interface{}) []ErrorResponse {
+    validationErrors := []ErrorResponse{}
+
+    errs := validate.Struct(data)
+    if errs != nil {
+        for _, err := range errs.(validator.ValidationErrors) {
+            elem := ErrorResponse{
+                Error:       true,
+                FailedField: err.Field(),
+                Tag:         err.Tag(),
+                Value:       err.Value(),
+            }
+            validationErrors = append(validationErrors, elem)
+        }
+    }
+
+    return validationErrors
+}
+
+var xValidator = &XValidator{validator: validate}
+```
+
+---
+
+## Struct Tag Validation
+
+### Common Tags
+
+```go
+type User struct {
+    // Required
+    Name string `json:"name" validate:"required"`
+
+    // String length
+    Username string `json:"username" validate:"required,min=3,max=20"`
+
+    // Email
+    Email string `json:"email" validate:"required,email"`
+
+    // Numeric constraints
+    Age int `json:"age" validate:"required,min=18,max=100"`
+
+    // URL
+    Website string `json:"website" validate:"omitempty,url"`
+
+    // Enum
+    Role string `json:"role" validate:"required,oneof=admin user guest"`
+
+    // Phone (E.164 format)
+    Phone string `json:"phone" validate:"required,e164"`
+
+    // Date
+    BirthDate time.Time `json:"birthDate" validate:"required"`
+}
+
+type CreatePaymentRequest struct {
+    Amount      float64 `json:"amount" validate:"required,gt=0"`
+    Currency    string  `json:"currency" validate:"required,iso4217"` // ISO 4217
+    Description string  `json:"description" validate:"required,min=5,max=200"`
+    CustomerID  string  `json:"customerId" validate:"required,uuid4"`
+    Method      string  `json:"method" validate:"required,oneof=credit_card debit_card pix boleto"`
+}
+
+type QueryParams struct {
+    Page    int      `query:"page" validate:"min=1"`
+    Limit   int      `query:"limit" validate:"min=1,max=100"`
+    SortBy  string   `query:"sort" validate:"omitempty,oneof=date amount status"`
+    OrderBy string   `query:"order" validate:"omitempty,oneof=asc desc"`
+    Tags    []string `query:"tags" validate:"omitempty,dive,alphanum"`
+}
+```
+
+---
+
+## Custom Validation Tags
+
+```go
+func init() {
+    // Register custom validation for Brazilian CPF
+    validate.RegisterValidation("cpf", validateCPF)
+
+    // Register custom validation for strong password
+    validate.RegisterValidation("strongpassword", validateStrongPassword)
+}
+
+func validateCPF(fl validator.FieldLevel) bool {
+    cpf := fl.Field().String()
+    // CPF validation logic
+    return isValidCPF(cpf)
+}
+
+func validateStrongPassword(fl validator.FieldLevel) bool {
+    password := fl.Field().String()
+    // Must have: min 8 chars, uppercase, lowercase, number, special char
+    hasMinLen := len(password) >= 8
+    hasUpper := regexp.MustCompile(`[A-Z]`).MatchString(password)
+    hasLower := regexp.MustCompile(`[a-z]`).MatchString(password)
+    hasNumber := regexp.MustCompile(`[0-9]`).MatchString(password)
+    hasSpecial := regexp.MustCompile(`[!@#$%^&*]`).MatchString(password)
+
+    return hasMinLen && hasUpper && hasLower && hasNumber && hasSpecial
+}
+
+// Usage
+type RegisterRequest struct {
+    CPF      string `json:"cpf" validate:"required,cpf"`
+    Password string `json:"password" validate:"required,strongpassword"`
+}
+```
+
+---
+
+## Validation in Handlers
+
+### Complete Flow
+
+```go
+app.Post("/users", func(c *fiber.Ctx) error {
+    user := new(User)
+
+    // Parse request body
+    if err := c.BodyParser(user); err != nil {
+        return c.Status(400).JSON(fiber.Map{
+            "error": "Cannot parse JSON",
+            "details": err.Error(),
+        })
+    }
+
+    // Validate
+    errors := xValidator.Validate(user)
+    if len(errors) > 0 {
+        return c.Status(400).JSON(fiber.Map{
+            "error": "Validation failed",
+            "details": errors,
+        })
+    }
+
+    // Process valid data
+    saveUser(user)
+
+    return c.Status(201).JSON(user)
+})
+```
+
+---
+
+## Validation Middleware
+
+```go
+import "reflect"
+
+func ValidateBody(schema interface{}) fiber.Handler {
+    return func(c *fiber.Ctx) error {
+        // Create new instance of schema type
+        body := reflect.New(reflect.TypeOf(schema)).Interface()
+
+        // Parse body
+        if err := c.BodyParser(body); err != nil {
+            return c.Status(400).JSON(fiber.Map{
+                "error": "Invalid request body",
+            })
+        }
+
+        // Validate
+        errors := xValidator.Validate(body)
+        if len(errors) > 0 {
+            return c.Status(400).JSON(fiber.Map{
+                "error": "Validation failed",
+                "details": errors,
+            })
+        }
+
+        // Store validated body in locals
+        c.Locals("validatedBody", body)
+
+        return c.Next()
+    }
+}
+
+// Usage
+app.Post("/payments",
+    ValidateBody(CreatePaymentRequest{}),
+    func(c *fiber.Ctx) error {
+        payment := c.Locals("validatedBody").(*CreatePaymentRequest)
+        // Process payment...
+        return c.JSON(payment)
+    },
+)
+```
+
+---
+
+## Summary
+
+- Use go-playground/validator for robust validation
+- Define validation rules in struct tags
+- Register custom validators for domain-specific rules
+- Return structured error responses
+- Create validation middleware for reusability

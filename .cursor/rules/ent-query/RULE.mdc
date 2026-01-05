@@ -1,0 +1,121 @@
+---
+description: "Entgo advanced querying: predicates, filtering, ordering, pagination, and graph traversal (eager loading)"
+alwaysApply: false
+globs: ["internal/service/**/*.go"]
+---
+
+# Ent Query & Traversal
+
+## 1. Predicates (Filtering)
+
+Each generated package (e.g., `ent/user`) provides type-safe predicates.
+
+### Common Predicates
+- **Equality:** `user.Name("Alice")`, `user.NameEQ("Alice")`, `user.NameNEQ("Bob")`
+- **Comparison:** `user.AgeGT(18)`, `user.AgeLTE(60)`
+- **String:** `user.NameContains("Ali")`, `user.NameHasPrefix("A")`
+- **List:** `user.IDIn(ids...)`, `user.StatusIn(statuses...)`
+- **Nullable:** `user.PhoneIsNil()`, `user.PhoneNotNil()`
+
+### Logical Operators
+- **AND:** `.Where(user.Name("A"), user.Age(20))` (Implicit AND)
+- **OR:** `.Where(user.Or(user.Name("A"), user.Name("B")))`
+- **NOT:** `.Where(user.Not(user.Name("C")))`
+
+```go
+client.User.Query().
+    Where(
+        user.Active(true),
+        user.Or(
+            user.Role("admin"),
+            user.Role("moderator"),
+        ),
+    ).
+    All(ctx)
+```
+
+## 2. Graph Traversal (Edges)
+
+Query across relationships.
+
+### Traverse and Filter
+Find users who have a pet named "Fluffy".
+
+```go
+users, err := client.User.Query().
+    Where(
+        user.HasPetsWith(
+            pet.Name("Fluffy"),
+        ),
+    ).
+    All(ctx)
+```
+
+### Traverse to Neighbor
+Get the owner of a specific pet.
+
+```go
+owner, err := client.Pet.Query().
+    Where(pet.ID(petID)).
+    QueryOwner(). // Transitions to UserQuery
+    Only(ctx)
+```
+
+## 3. Eager Loading (With)
+
+Load related entities in a single query (or minimal queries) to avoid N+1 problems.
+
+```go
+users, err := client.User.Query().
+    WithPets(func(q *ent.PetQuery) {
+        q.Where(pet.Type("Dog")) // Optional: filter included edges
+    }).
+    WithGroups().
+    All(ctx)
+
+// Access loaded edges
+for _, u := range users {
+    for _, p := range u.Edges.Pets {
+        fmt.Println(p.Name)
+    }
+}
+```
+
+## 4. Ordering & Pagination
+
+### Ordering
+```go
+client.User.Query().
+    Order(ent.Asc(user.FieldAge)).
+    All(ctx)
+```
+
+### Pagination
+```go
+client.User.Query().
+    Offset(10).
+    Limit(5).
+    All(ctx)
+```
+
+## 5. Aggregation
+
+Count, Min, Max, Sum.
+
+```go
+count, err := client.User.Query().
+    Where(user.Active(true)).
+    Count(ctx)
+```
+
+```go
+// Group by and Count
+var v []struct {
+    Role  string `json:"role"`
+    Count int    `json:"count"`
+}
+client.User.Query().
+    GroupBy(user.FieldRole).
+    Aggregate(ent.Count()).
+    Scan(ctx, &v)
+```

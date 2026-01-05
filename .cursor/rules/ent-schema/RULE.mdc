@@ -1,0 +1,144 @@
+---
+description: "Entgo schema definition: fields, edges, indexes, mixins, and annotations"
+alwaysApply: false
+globs: ["ent/schema/*.go"]
+---
+
+# Ent Schema Definition
+
+## 1. Schema Structure
+
+Schemas are defined in `ent/schema` and must embed `ent.Schema`.
+
+```go
+package schema
+
+import (
+    "entgo.io/ent"
+    "entgo.io/ent/schema/field"
+    "entgo.io/ent/schema/edge"
+)
+
+type User struct {
+    ent.Schema
+}
+
+func (User) Fields() []ent.Field {
+    return []ent.Field{
+        field.String("name").NotEmpty(),
+        field.Int("age").Positive(),
+    }
+}
+
+func (User) Edges() []ent.Edge {
+    return []ent.Edge{
+        edge.To("pets", Pet.Type),
+    }
+}
+```
+
+## 2. Fields
+
+Use `field.<Type>` to define fields. Chain validators and modifiers.
+
+### Common Types
+- `field.String`, `field.Int`, `field.Bool`, `field.Time`
+- `field.UUID`, `field.JSON`, `field.Enum`
+
+### Modifiers
+- `.Default(value)`
+- `.Optional()` (nullable)
+- `.Unique()`
+- `.Immutable()` (cannot be updated)
+- `.Sensitive()` (omitted from String/JSON)
+- `.StructTag("json: \"custom_name\"")`
+
+### Example
+```go
+field.String("email").
+    Unique().
+    NotEmpty().
+    MaxLen(255)
+```
+
+## 3. Edges (Relationships)
+
+Define relationships between entities.
+
+### Types
+- **O2O (One-to-One):** `edge.To("card", Card.Type).Unique()` (and back `edge.From(...).Unique()`)
+- **O2M (One-to-Many):** `edge.To("pets", Pet.Type)` (and back `edge.From("owner", User.Type).Ref("pets").Unique()`)
+- **M2M (Many-to-Many):** `edge.To("groups", Group.Type)` (and back `edge.From("users", User.Type).Ref("groups")`)
+
+### Inverse Edges (Back-references)
+ALWAYS define inverse edges for bidirectional navigation. Use `.Ref()` on the "child" side.
+
+```go
+// User (Parent)
+func (User) Edges() []ent.Edge {
+    return []ent.Edge{
+        edge.To("pets", Pet.Type),
+    }
+}
+
+// Pet (Child)
+func (Pet) Edges() []ent.Edge {
+    return []ent.Edge{
+        edge.From("owner", User.Type).
+            Ref("pets").
+            Unique().
+            Required(),
+    }
+}
+```
+
+## 4. Indexes
+
+Define database indexes for performance or uniqueness constraints on multiple fields.
+
+```go
+func (User) Indexes() []ent.Index {
+    return []ent.Index{
+        index.Fields("name", "age").
+            Unique(),
+    }
+}
+```
+
+## 5. Mixins
+
+Reuse schema parts (fields, edges, hooks) across multiple schemas.
+
+```go
+// ent/schema/mixin.go
+type TimeMixin struct {
+    mixin.Schema
+}
+
+func (TimeMixin) Fields() []ent.Field {
+    return []ent.Field{
+        field.Time("created_at").Default(time.Now).Immutable(),
+        field.Time("updated_at").Default(time.Now).UpdateDefault(time.Now),
+    }
+}
+
+// ent/schema/user.go
+func (User) Mixin() []ent.Mixin {
+    return []ent.Mixin{
+        TimeMixin{},
+    }
+}
+```
+
+## 6. Annotations
+
+Customize storage or generation.
+
+```go
+func (User) Annotations() []schema.Annotation {
+    return []schema.Annotation{
+        entsql.Annotation{Table: "users_custom_table"},
+    }
+}
+```
+

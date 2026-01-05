@@ -1,0 +1,278 @@
+---
+description: "Fiber error handling: panic recovery, custom error structs, error handlers, structured responses, and logging patterns"
+alwaysApply: false
+globs: ["internal/http/handler/**/*.go", "cmd/app/**/*.go"]
+---
+
+# Fiber Error Handling
+
+## Panic Recovery
+
+### ❌ WITHOUT Recovery
+
+```go
+app.Get("/panic", func(c *fiber.Ctx) error {
+    panic("Something went wrong") // ❌ Crashes entire application!
+    return nil
+})
+```
+
+### ✅ WITH Recovery Middleware
+
+```go
+import "github.com/gofiber/fiber/v2/middleware/recover"
+
+app.Use(recover.New(recover.Config{
+    EnableStackTrace: true,
+    StackTraceHandler: func(c *fiber.Ctx, e interface{}) {
+        log.Printf("Panic recovered: %v", e)
+    },
+}))
+
+app.Get("/panic", func(c *fiber.Ctx) error {
+    panic("Something went wrong") // ✅ Caught by recover middleware
+    return nil
+})
+```
+
+---
+
+## Returning Errors from Handlers
+
+```go
+app.Get("/user/:id", func(c *fiber.Ctx) error {
+    id := c.Params("id")
+
+    user, err := getUserByID(id)
+    if err != nil {
+        // Return error - will be caught by error handler
+        return err
+    }
+
+    return c.JSON(user)
+})
+```
+
+---
+
+## Custom Error Structs
+
+### fiber.NewError
+
+```go
+// Simple error with status code
+app.Get("/not-found", func(c *fiber.Ctx) error {
+    return fiber.NewError(404, "Resource not found")
+})
+
+// Error with default message
+app.Get("/unavailable", func(c *fiber.Ctx) error {
+    return fiber.NewError(503) // Uses "Service Unavailable"
+})
+
+// Domain-specific errors
+var (
+    ErrUserNotFound       = fiber.NewError(404, "User not found")
+    ErrInvalidCredentials = fiber.NewError(401, "Invalid credentials")
+    ErrInsufficientFunds  = fiber.NewError(400, "Insufficient funds")
+    ErrPaymentProcessing  = fiber.NewError(503, "Payment processing failed")
+)
+
+app.Post("/login", func(c *fiber.Ctx) error {
+    // ...
+    if !validCredentials {
+        return ErrInvalidCredentials
+    }
+    // ...
+})
+```
+
+---
+
+## Custom Error Handler
+
+### Basic Handler
+
+```go
+func customErrorHandler(c *fiber.Ctx, err error) error {
+    code := 500
+
+    if e, ok := err.(*fiber.Error); ok {
+        code = e.Code
+    }
+
+    return c.Status(code).JSON(fiber.Map{
+        "error": err.Error(),
+    })
+}
+
+// Set in Fiber config
+app := fiber.New(fiber.Config{
+    ErrorHandler: customErrorHandler,
+})
+```
+
+### Production-Ready Handler
+
+```go
+func enhancedErrorHandler(c *fiber.Ctx, err error) error {
+    code := 500
+    message := "Internal Server Error"
+
+    // Extract Fiber error
+    var fiberErr *fiber.Error
+    if errors.As(err, &fiberErr) {
+        code = fiberErr.Code
+        message = fiberErr.Message
+    }
+
+    // Log error
+    log.Printf("[ERROR] %d - %s: %v", code, c.Path(), err)
+
+    // Determine response format
+    if c.Accepts("json", "html") == "json" {
+        return c.Status(code).JSON(fiber.Map{
+            "error":   true,
+            "message": message,
+            "status":  code,
+            "path":    c.Path(),
+        })
+    }
+
+    // HTML error page
+    return c.Status(code).SendFile(fmt.Sprintf("./errors/%d.html", code))
+}
+```
+
+### Structured Error Response
+
+```go
+type ErrorDetails struct {
+    Error     bool        `json:"error"`
+    Message   string      `json:"message"`
+    Status    int         `json:"status"`
+    Path      string      `json:"path"`
+    Method    string      `json:"method"`
+    Timestamp time.Time   `json:"timestamp"`
+    RequestID string      `json:"requestId,omitempty"`
+    Details   interface{} `json:"details,omitempty"`
+}
+
+func structuredErrorHandler(c *fiber.Ctx, err error) error {
+    code := 500
+    message := "Internal Server Error"
+    var details interface{}
+
+    // Handle Fiber errors
+    var fiberErr *fiber.Error
+    if errors.As(err, &fiberErr) {
+        code = fiberErr.Code
+        message = fiberErr.Message
+    }
+
+    // Handle validation errors
+    if validationErrs, ok := err.(validator.ValidationErrors); ok {
+        code = 400
+        message = "Validation failed"
+        details = formatValidationErrors(validationErrs)
+    }
+
+    // Build error response
+    errorResponse := ErrorDetails{
+        Error:     true,
+        Message:   message,
+        Status:    code,
+        Path:      c.Path(),
+        Method:    c.Method(),
+        Timestamp: time.Now(),
+        RequestID: c.Locals("requestid").(string),
+        Details:   details,
+    }
+
+    // Log error
+    log.Printf("[%d] %s %s - %v - RequestID: %s",
+        code, c.Method(), c.Path(), err, errorResponse.RequestID)
+
+    return c.Status(code).JSON(errorResponse)
+}
+```
+
+---
+
+## Error Handling Best Practices
+
+### ✅ DO
+
+```go
+// Return specific errors
+func getUser(id string) (*User, error) {
+    user, err := db.FindUser(id)
+    if err != nil {
+        if errors.Is(err, sql.ErrNoRows) {
+            return nil, ErrUserNotFound
+        }
+        return nil, err
+    }
+    return user, nil
+}
+
+// Use error wrapping for context
+func processPayment(payment *Payment) error {
+    if payment.Amount <= 0 {
+        return ErrInvalidAmount
+    }
+
+    if err := chargeCard(payment); err != nil {
+        return fmt.Errorf("failed to charge card: %w", err)
+    }
+
+    return nil
+}
+
+// Recover from panics
+app.Use(recover.New())
+
+// Log errors appropriately
+log.Printf("[ERROR] Failed to process payment: %v", err)
+```
+
+### ❌ DON'T
+
+```go
+// Don't swallow errors
+func handler(c *fiber.Ctx) error {
+    user, err := getUser("123")
+    if err != nil {
+        // ❌ Don't ignore errors
+    }
+    return c.JSON(user)
+}
+
+// Don't return generic errors
+func getUser(id string) (*User, error) {
+    user, err := db.FindUser(id)
+    if err != nil {
+        return nil, errors.New("error") // ❌ Too generic
+    }
+    return user, nil
+}
+
+// Don't expose internal errors to clients
+func handler(c *fiber.Ctx) error {
+    err := internalFunction()
+    return c.JSON(fiber.Map{
+        "error": err.Error(), // ❌ May expose sensitive info
+    })
+}
+```
+
+---
+
+## Summary
+
+- Always use **Recover middleware** to catch panics
+- Return errors from handlers - don't swallow them
+- Use **fiber.NewError()** for custom status codes
+- Implement **custom error handler** for consistent responses
+- Log errors appropriately for monitoring
+- Don't expose internal error details to clients
