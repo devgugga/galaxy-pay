@@ -39,6 +39,9 @@ type Config struct {
 	// Rate limiting
 	RateLimitMax      int
 	RateLimitDuration time.Duration
+
+	// External API configuration
+	ExternalAPITimeout time.Duration // Default timeout for external API calls
 }
 
 // Load loads configuration from environment variables
@@ -81,6 +84,10 @@ func Load() (*Config, error) {
 	cfg.RateLimitMax = getEnvAsInt("RATE_LIMIT_MAX", 100)
 	rateLimitDurationSeconds := getEnvAsInt("RATE_LIMIT_DURATION", 60)
 	cfg.RateLimitDuration = time.Duration(rateLimitDurationSeconds) * time.Second
+
+	// External API timeout (default 30 seconds)
+	externalAPITimeoutSeconds := getEnvAsInt("EXTERNAL_API_TIMEOUT", 30)
+	cfg.ExternalAPITimeout = time.Duration(externalAPITimeoutSeconds) * time.Second
 
 	return cfg, nil
 }
