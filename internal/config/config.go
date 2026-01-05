@@ -42,6 +42,11 @@ type Config struct {
 
 	// External API configuration
 	ExternalAPITimeout time.Duration // Default timeout for external API calls
+
+	// Database configuration
+	DatabaseURL        string
+	DatabaseMaxConns   int
+	DatabaseMaxIdleConns int
 }
 
 // Load loads configuration from environment variables
@@ -88,6 +93,11 @@ func Load() (*Config, error) {
 	// External API timeout (default 30 seconds)
 	externalAPITimeoutSeconds := getEnvAsInt("EXTERNAL_API_TIMEOUT", 30)
 	cfg.ExternalAPITimeout = time.Duration(externalAPITimeoutSeconds) * time.Second
+
+	// Database configuration
+	cfg.DatabaseURL = getEnv("DATABASE_URL", "")
+	cfg.DatabaseMaxConns = getEnvAsInt("DATABASE_MAX_CONNS", 25)
+	cfg.DatabaseMaxIdleConns = getEnvAsInt("DATABASE_MAX_IDLE_CONNS", 5)
 
 	return cfg, nil
 }

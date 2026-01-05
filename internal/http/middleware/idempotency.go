@@ -43,8 +43,8 @@ func Idempotency(store *cache.IdempotencyStore) fiber.Handler {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		// Check if response exists in cache
-		cachedResponse, err := store.Get(ctx, idempotencyKey)
+		// Check if response exists (Cache-Aside: Redis -> DB)
+		cachedResponse, err := store.WithRequestID(requestID).Get(ctx, idempotencyKey)
 		if err != nil {
 			logger.WithRequestID(requestID).Error("Failed to check idempotency key",
 				logger.Error(err),
@@ -99,23 +99,15 @@ func Idempotency(store *cache.IdempotencyStore) fiber.Handler {
 			}
 		})
 
-		// Store in cache (async to not block response)
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-
-			if err := store.Set(ctx, idempotencyKey, response); err != nil {
-				logger.WithRequestID(requestID).Warn("Failed to cache idempotent response",
-					logger.Error(err),
-					logger.String("idempotency_key", idempotencyKey),
-				)
-			} else {
-				logger.WithRequestID(requestID).Info("Cached idempotent response",
-					logger.String("idempotency_key", idempotencyKey),
-					logger.Int("status", statusCode),
-				)
-			}
-		}()
+		// Store response (Write-Through: DB first, then Redis async)
+		// This is done synchronously to ensure DB persistence, Redis is async
+		if err := store.WithRequestID(requestID).Set(ctx, idempotencyKey, response); err != nil {
+			logger.WithRequestID(requestID).Error("Failed to save idempotent response",
+				logger.Error(err),
+				logger.String("idempotency_key", idempotencyKey),
+			)
+			// Continue even if save fails (fail-open)
+		}
 
 		return nil
 	}

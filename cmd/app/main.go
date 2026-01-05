@@ -7,9 +7,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/devgugga/galaxy-pay/ent"
 	"github.com/devgugga/galaxy-pay/internal/config"
 	"github.com/devgugga/galaxy-pay/internal/http/middleware"
 	"github.com/devgugga/galaxy-pay/internal/infrastructure/cache"
+	"github.com/devgugga/galaxy-pay/internal/infrastructure/database"
 	"github.com/devgugga/galaxy-pay/pkg/logger"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/recover"
@@ -47,11 +49,36 @@ func main() {
 	logger.Log.Info("Redis connected successfully")
 	defer cache.Close()
 
+	// Initialize Database (optional - idempotency will work with Redis only if DB is not available)
+	var entClient *ent.Client
+	if cfg.DatabaseURL != "" {
+		if err := database.InitEntClient(cfg); err != nil {
+			logger.Log.Warn("Failed to initialize database - idempotency will use Redis only",
+				logger.Error(err),
+			)
+		} else {
+			entClient = database.Client
+			defer database.Close()
+		}
+	}
+
 	// Create idempotency store (will be used when payment routes are added)
 	// var idempotencyStore *cache.IdempotencyStore
+	// var cleanupWorker *worker.IdempotencyCleanupWorker
 	// if cache.Client != nil {
-	// 	idempotencyStore = cache.NewIdempotencyStore(cache.Client, 24*time.Hour)
+	// 	idempotencyStore = cache.NewIdempotencyStore(cache.Client, entClient, 24*time.Hour)
+	// 	// Start cleanup worker for expired keys
+	// 	cleanupWorker = worker.NewIdempotencyCleanupWorker(idempotencyStore, 1*time.Hour)
+	// 	ctx, cancel := context.WithCancel(context.Background())
+	// 	defer cancel()
+	// 	cleanupWorker.Start(ctx)
 	// }
+	
+	// Suppress unused variable warning until idempotency store is used
+	_ = entClient
+	
+	// Suppress unused variable warning until idempotency store is used
+	_ = entClient
 
 	// Initialize Fiber with performance config
 	app := fiber.New(fiber.Config{
