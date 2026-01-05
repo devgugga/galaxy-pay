@@ -1,7 +1,7 @@
 ---
 description: "Fiber security best practices: authentication (BasicAuth, KeyAuth, JWT), CSRF protection, CORS, Helmet headers, and secure cookies"
 alwaysApply: false
-globs: ["internal/middleware/**/*.go", "internal/handlers/**/*.go"]
+globs: ["internal/http/middleware/**/*.go", "internal/http/handler/**/*.go"]
 ---
 
 # Fiber Security Best Practices

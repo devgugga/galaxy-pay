@@ -1,7 +1,7 @@
 ---
 description: "Entgo advanced querying: predicates, filtering, ordering, pagination, and graph traversal (eager loading)"
 alwaysApply: false
-globs: ["internal/services/**/*.go", "internal/repositories/**/*.go"]
+globs: ["internal/service/**/*.go"]
 ---
 
 # Ent Query & Traversal

@@ -1,7 +1,7 @@
 ---
 description: "Fiber validation patterns using go-playground/validator: struct tags, custom validators, error handling, and validation middleware"
 alwaysApply: false
-globs: ["internal/handlers/**/*.go", "internal/services/**/*.go"]
+globs: ["internal/http/handler/**/*.go", "internal/service/**/*.go"]
 ---
 
 # Fiber Validation Patterns

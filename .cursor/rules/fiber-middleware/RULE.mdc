@@ -1,7 +1,7 @@
 ---
 description: "Fiber middleware patterns: built-in middleware (30+ options), ordering best practices, custom middleware creation, and configuration examples"
 alwaysApply: false
-globs: ["internal/middleware/**/*.go", "cmd/app/**/*.go"]
+globs: ["internal/http/middleware/**/*.go", "cmd/app/**/*.go"]
 ---
 
 # Fiber Middleware Patterns

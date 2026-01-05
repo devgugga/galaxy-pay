@@ -1,7 +1,7 @@
 ---
 description: "Fiber error handling: panic recovery, custom error structs, error handlers, structured responses, and logging patterns"
 alwaysApply: false
-globs: ["internal/handlers/**/*.go", "cmd/app/**/*.go"]
+globs: ["internal/http/handler/**/*.go", "cmd/app/**/*.go"]
 ---
 
 # Fiber Error Handling

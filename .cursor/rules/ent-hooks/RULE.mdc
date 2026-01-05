@@ -1,7 +1,7 @@
 ---
 description: "Entgo hooks and interceptors: lifecycle events, logging, and auditing"
 alwaysApply: false
-globs: ["ent/schema/*.go", "internal/services/**/*.go"]
+globs: ["ent/schema/*.go", "internal/service/**/*.go"]
 ---
 
 # Ent Hooks & Interceptors

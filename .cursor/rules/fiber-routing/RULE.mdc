@@ -1,7 +1,7 @@
 ---
 description: "Fiber routing patterns, dynamic parameters, route constraints, grouping, and Context API for request/response handling"
 alwaysApply: false
-globs: ["internal/handlers/**/*.go", "cmd/app/**/*.go"]
+globs: ["internal/http/handler/**/*.go", "cmd/app/**/*.go"]
 ---
 
 # Fiber Routing & Context API

@@ -1,7 +1,7 @@
 ---
 description: "Integrating Fiber with Galaxy Pay architecture: layered pattern (handlers → services → repositories), dependency injection, and router organization"
 alwaysApply: false
-globs: ["internal/handlers/**/*.go", "internal/services/**/*.go", "cmd/app/**/*.go"]
+globs: ["internal/http/handler/**/*.go", "internal/service/**/*.go", "cmd/app/**/*.go"]
 ---
 
 # Fiber Integration with Galaxy Pay Architecture
@@ -29,14 +29,14 @@ package handlers
 
 import (
     "github.com/gofiber/fiber/v2"
-    "github.com/devgugga/galaxy-pay/internal/services"
+    "github.com/devgugga/galaxy-pay/internal/service"
 )
 
 type UserHandler struct {
-    userService *services.UserService
+    userService *service.UserService
 }
 
-func NewUserHandler(userService *services.UserService) *UserHandler {
+func NewUserHandler(userService *service.UserService) *UserHandler {
     return &UserHandler{
         userService: userService,
     }
@@ -84,31 +84,30 @@ func (h *UserHandler) Create(c *fiber.Ctx) error {
 package services
 
 import (
-    "github.com/devgugga/galaxy-pay/internal/repositories"
+    "github.com/devgugga/galaxy-pay/ent"
 )
 
 type UserService struct {
-    userRepo *repositories.UserRepository
+    entClient *ent.Client
 }
 
-func NewUserService(userRepo *repositories.UserRepository) *UserService {
+func NewUserService(entClient *ent.Client) *UserService {
     return &UserService{
-        userRepo: userRepo,
+        entClient: entClient,
     }
 }
 
 func (s *UserService) ListUsers() ([]*User, error) {
-    return s.userRepo.FindAll()
+    return s.entClient.User.Query().All(context.Background())
 }
 
 func (s *UserService) GetUser(id string) (*User, error) {
-    user, err := s.userRepo.FindByID(id)
+    user, err := s.entClient.User.Query().Where(user.ID(id)).Only(context.Background())
     if err != nil {
+        if ent.IsNotFound(err) {
+            return nil, ErrUserNotFound
+        }
         return nil, err
-    }
-
-    if user == nil {
-        return nil, ErrUserNotFound
     }
 
     return user, nil
@@ -141,9 +140,9 @@ import (
     "github.com/gofiber/fiber/v2/middleware/recover"
 
     "github.com/devgugga/galaxy-pay/internal/config"
-    "github.com/devgugga/galaxy-pay/internal/handlers"
-    "github.com/devgugga/galaxy-pay/internal/repositories"
-    "github.com/devgugga/galaxy-pay/internal/services"
+    "github.com/devgugga/galaxy-pay/internal/http/handler"
+    "github.com/devgugga/galaxy-pay/internal/service"
+    "github.com/devgugga/galaxy-pay/ent"
 )
 
 func main() {
@@ -153,17 +152,20 @@ func main() {
     // Initialize database
     db := initDB(cfg)
 
-    // Initialize repositories
-    userRepo := repositories.NewUserRepository(db)
-    paymentRepo := repositories.NewPaymentRepository(db)
+    // Initialize Ent client
+    entClient, err := ent.Open("postgres", cfg.DatabaseURL)
+    if err != nil {
+        log.Fatalf("failed opening connection to database: %v", err)
+    }
+    defer entClient.Close()
 
-    // Initialize services
-    userService := services.NewUserService(userRepo)
-    paymentService := services.NewPaymentService(paymentRepo)
+    // Initialize services (now using Ent client directly)
+    userService := service.NewUserService(entClient)
+    paymentService := service.NewPaymentService(entClient)
 
     // Initialize handlers
-    userHandler := handlers.NewUserHandler(userService)
-    paymentHandler := handlers.NewPaymentHandler(paymentService)
+    userHandler := handler.NewUserHandler(userService)
+    paymentHandler := handler.NewPaymentHandler(paymentService)
 
     // Create Fiber app
     app := fiber.New(fiber.Config{
@@ -186,8 +188,8 @@ func main() {
 
 func setupRoutes(
     app *fiber.App,
-    userHandler *handlers.UserHandler,
-    paymentHandler *handlers.PaymentHandler,
+    userHandler *handler.UserHandler,
+    paymentHandler *handler.PaymentHandler,
 ) {
     // Health checks
     app.Get("/health", healthCheck)
@@ -240,12 +242,11 @@ func readyCheck(c *fiber.Ctx) error {
 // Container holds all dependencies
 type Container struct {
     DB              *sql.DB
-    UserRepo        *repositories.UserRepository
-    PaymentRepo     *repositories.PaymentRepository
-    UserService     *services.UserService
-    PaymentService  *services.PaymentService
-    UserHandler     *handlers.UserHandler
-    PaymentHandler  *handlers.PaymentHandler
+    EntClient       *ent.Client
+    UserService     *service.UserService
+    PaymentService  *service.PaymentService
+    UserHandler     *handler.UserHandler
+    PaymentHandler  *handler.PaymentHandler
 }
 
 func NewContainer(cfg *config.Config) (*Container, error) {
@@ -255,17 +256,20 @@ func NewContainer(cfg *config.Config) (*Container, error) {
         return nil, err
     }
 
-    // Initialize repositories
-    userRepo := repositories.NewUserRepository(db)
-    paymentRepo := repositories.NewPaymentRepository(db)
+    // Initialize Ent client
+    entClient, err := ent.Open("postgres", cfg.DatabaseURL)
+    if err != nil {
+        log.Fatalf("failed opening connection to database: %v", err)
+    }
+    defer entClient.Close()
 
-    // Initialize services
-    userService := services.NewUserService(userRepo)
-    paymentService := services.NewPaymentService(paymentRepo)
+    // Initialize services (now using Ent client directly)
+    userService := service.NewUserService(entClient)
+    paymentService := service.NewPaymentService(entClient)
 
     // Initialize handlers
-    userHandler := handlers.NewUserHandler(userService)
-    paymentHandler := handlers.NewPaymentHandler(paymentService)
+    userHandler := handler.NewUserHandler(userService)
+    paymentHandler := handler.NewPaymentHandler(paymentService)
 
     return &Container{
         DB:             db,
@@ -320,7 +324,7 @@ func Setup(app *fiber.App, container *Container) {
     // v2 := api.Group("/v2")
 }
 
-func setupUserRoutes(router fiber.Router, h *handlers.UserHandler) {
+func setupUserRoutes(router fiber.Router, h *handler.UserHandler) {
     users := router.Group("/users")
     users.Get("/", h.List)
     users.Get("/:id", h.Get)
@@ -329,7 +333,7 @@ func setupUserRoutes(router fiber.Router, h *handlers.UserHandler) {
     users.Delete("/:id", h.Delete)
 }
 
-func setupPaymentRoutes(router fiber.Router, h *handlers.PaymentHandler) {
+func setupPaymentRoutes(router fiber.Router, h *handler.PaymentHandler) {
     payments := router.Group("/payments")
     payments.Get("/", h.List)
     payments.Post("/", h.Create)

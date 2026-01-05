@@ -1,7 +1,7 @@
 ---
 description: "Entgo CRUD operations: Create, Read, Update, Delete, and Transaction basics"
 alwaysApply: false
-globs: ["internal/services/**/*.go", "internal/repositories/**/*.go"]
+globs: ["internal/service/**/*.go"]
 ---
 
 # Ent CRUD Operations
