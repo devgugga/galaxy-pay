@@ -1,0 +1,97 @@
+---
+description: "Entgo hooks and interceptors: lifecycle events, logging, and auditing"
+alwaysApply: false
+globs: ["ent/schema/*.go", "internal/services/**/*.go"]
+---
+
+# Ent Hooks & Interceptors
+
+## 1. Schema Hooks (Mutation Hooks)
+
+Hooks defined in the schema run during mutation operations (Create, Update, Delete).
+
+```go
+// ent/schema/user.go
+func (User) Hooks() []ent.Hook {
+    return []ent.Hook{
+        OnUserUpdate(),
+    }
+}
+
+func OnUserUpdate() ent.Hook {
+    return func(next ent.Mutator) ent.Mutator {
+        return ent.MutateFunc(func(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+            // Pre-mutation logic
+            if !m.Op().Is(ent.OpUpdate | ent.OpUpdateOne) {
+                return next.Mutate(ctx, m)
+            }
+            
+            // Access fields
+            if name, exists := m.Field("name"); exists {
+                fmt.Printf("Updating name to %s\n", name)
+            }
+
+            // Call next mutator (database operation)
+            v, err := next.Mutate(ctx, m)
+
+            // Post-mutation logic
+            if err == nil {
+                fmt.Println("Update success")
+            }
+            
+            return v, err
+        })
+    }
+}
+```
+
+### Hook Registration
+- **Schema-level:** Defined in `func (T) Hooks()`. Runs only for that entity.
+- **Runtime-level:** `client.User.Use(MyHook)`.
+
+## 2. Interceptors (Query Interceptors)
+
+Intercept Read/Query operations.
+
+```go
+// ent/schema/user.go
+func (User) Interceptors() []ent.Interceptor {
+    return []ent.Interceptor{
+        ent.InterceptFunc(func(next ent.Querier) ent.Querier {
+            return ent.QuerierFunc(func(ctx context.Context, q ent.Query) (ent.Value, error) {
+                // Filter Soft-deleted users globally
+                if query, ok := q.(*ent.UserQuery); ok {
+                    query.Where(user.DeletedAtIsNil())
+                }
+                return next.Query(ctx, q)
+            })
+        }),
+    }
+}
+```
+
+## 3. Global Hooks (Runtime)
+
+Register hooks for all operations on the client.
+
+```go
+// main.go or setup
+client.Use(func(next ent.Mutator) ent.Mutator {
+    return ent.MutateFunc(func(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+        start := time.Now()
+        v, err := next.Mutate(ctx, m)
+        log.Printf("Op: %s, Type: %s, Duration: %s", m.Op(), m.Type(), time.Since(start))
+        return v, err
+    })
+})
+```
+
+## 4. Helper Functions
+
+Use `ent.Op` to filter operations inside hooks.
+
+```go
+if m.Op().Is(ent.OpCreate) { ... }
+if m.Op().Is(ent.OpDelete | ent.OpDeleteOne) { ... }
+```
+

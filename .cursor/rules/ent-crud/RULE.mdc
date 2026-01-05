@@ -1,0 +1,133 @@
+---
+description: "Entgo CRUD operations: Create, Read, Update, Delete, and Transaction basics"
+alwaysApply: false
+globs: ["internal/services/**/*.go", "internal/repositories/**/*.go"]
+---
+
+# Ent CRUD Operations
+
+## 1. Client Usage
+
+Access builders through the `ent.Client`.
+
+```go
+func CreateUser(ctx context.Context, client *ent.Client) (*ent.User, error) {
+    return client.User.
+        Create().
+        SetName("Alice").
+        SetAge(30).
+        Save(ctx)
+}
+```
+
+## 2. Create
+
+### Basic Create
+```go
+u, err := client.User.Create().
+    SetName("Bob").
+    SetRole(user.RoleAdmin).
+    Save(ctx)
+```
+
+### Batch Create
+Use `CreateBulk` for inserting multiple entities efficiently.
+
+```go
+builders := []*ent.UserCreate{
+    client.User.Create().SetName("A"),
+    client.User.Create().SetName("B"),
+}
+users, err := client.User.CreateBulk(builders...).Save(ctx)
+```
+
+## 3. Read (Query)
+
+### Get by ID
+```go
+u, err := client.User.Get(ctx, id)
+```
+
+### Find (returns nil if not found)
+```go
+u, err := client.User.Query().
+    Where(user.Name("Alice")).
+    Only(ctx) 
+// Returns ent.NotFound error if 0, ent.NotSingular if >1
+```
+
+### List all
+```go
+users, err := client.User.Query().All(ctx)
+```
+
+## 4. Update
+
+### Update One (by ID)
+```go
+u, err := client.User.UpdateOneID(id).
+    SetAge(31).
+    Save(ctx)
+```
+
+### Update One (Predicate)
+```go
+err := client.User.UpdateOne(u).
+    SetName("New Name").
+    Save(ctx)
+```
+
+### Update Many
+```go
+affected, err := client.User.Update().
+    Where(user.AgeLT(18)).
+    SetActive(false).
+    Save(ctx)
+```
+
+## 5. Delete
+
+### Delete One
+```go
+err := client.User.DeleteOneID(id).Exec(ctx)
+```
+
+### Delete Many
+```go
+affected, err := client.User.Delete().
+    Where(user.Status(user.StatusBanned)).
+    Exec(ctx)
+```
+
+## 6. Transactions
+
+Always use transactions for atomic operations.
+
+```go
+func DoWithTx(ctx context.Context, client *ent.Client, fn func(tx *ent.Tx) error) error {
+    tx, err := client.Tx(ctx)
+    if err != nil {
+        return err
+    }
+    defer func() {
+        if v := recover(); v != nil {
+            tx.Rollback()
+            panic(v)
+        }
+    }()
+    if err := fn(tx); err != nil {
+        if rerr := tx.Rollback(); rerr != nil {
+            err = fmt.Errorf("%w: rolling back transaction: %v", err, rerr)
+        }
+        return err
+    }
+    return tx.Commit()
+}
+
+// Usage
+err := DoWithTx(ctx, client, func(tx *ent.Tx) error {
+    u, err := tx.User.Create().SetName("Bob").Save(ctx)
+    if err != nil { return err }
+    return tx.Group.Create().AddUsers(u).Save(ctx)
+})
+```

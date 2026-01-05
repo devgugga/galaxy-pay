@@ -1,0 +1,96 @@
+---
+description: "Entgo schema migration: automatic migration, Atlas integration, and versioned migrations"
+alwaysApply: false
+globs: ["ent/migrate/**/*.go", "cmd/**/*.go"]
+---
+
+# Ent Schema Migration
+
+## 1. Automatic Migration (Dev/Test)
+
+Use `Schema.Create` for rapid development. It creates tables, indexes, and foreign keys.
+
+```go
+if err := client.Schema.Create(
+    ctx, 
+    migrate.WithForeignKeys(false), // Optional options
+    migrate.WithDropIndex(true),
+    migrate.WithDropColumn(true),
+); err != nil {
+    log.Fatalf("failed creating schema resources: %v", err)
+}
+```
+
+**⚠️ Warning:** Avoid `WithDropColumn(true)` in production without careful review, as it deletes data.
+
+## 2. Versioned Migrations (Production)
+
+Use **Atlas** for versioned migrations. Do not use `Schema.Create` in production apps directly if you need strict control.
+
+### Workflow
+1.  **Generate Migration File:** Compare Ent schema with the migration directory (state).
+2.  **Apply Migration:** Apply the SQL files to the database.
+
+### Setup (ent/entc.go)
+If using a custom build tool (recommended):
+
+```go
+// +build ignore
+
+package main
+
+import (
+    "log"
+    "entgo.io/ent/entc"
+    "entgo.io/ent/entc/gen"
+    "ariga.io/atlas/sql/sqltool"
+)
+
+func main() {
+    // ... load schema ...
+    err := entc.Generate("./schema", &gen.Config{}, entc.Extensions(
+        // Enable Atlas integration
+    ))
+}
+```
+
+### Generating Migrations (CLI)
+
+```bash
+# Generate a new migration file named "add_user_age"
+atlas migrate diff add_user_age \
+  --dir "file://ent/migrate/migrations" \
+  --to "ent://ent/schema" \
+  --dev-url "docker://postgres/15/test"
+```
+
+## 3. Migration Hooks
+
+Execute logic before or after migration.
+
+```go
+// ent/migrate/main.go (example structure)
+func createSchema(client *ent.Client) {
+    // Custom hook to verify pre-conditions
+    if err := verifyPreConditions(); err != nil {
+        log.Fatal(err)
+    }
+
+    if err := client.Schema.Create(context.Background()); err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+## 4. Offline Mode
+
+Generate SQL without connecting to a DB.
+
+```go
+// Dump migration to stdout
+if err := client.Schema.WriteTo(ctx, os.Stdout); err != nil {
+    log.Fatal(err)
+}
+```
+
+```
